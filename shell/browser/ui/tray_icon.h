@@ -57,6 +57,9 @@ class TrayIcon {
   virtual void SetTitle(const std::string& title,
                         const TitleOptions& options) = 0;
   virtual std::string GetTitle() = 0;
+
+  // Get the effective appearance of the menubar (light or dark).
+  virtual std::string GetEffectiveAppearance() = 0;
 #endif
 
   enum class IconType { kNone, kInfo, kWarning, kError, kCustom };

@@ -128,6 +128,16 @@
   return ignoreDoubleClickEvents_;
 }
 
+- (NSString*)getEffectiveAppearance {
+  if (statusItem_ && statusItem_.button) {
+    NSString* name = statusItem_.button.effectiveAppearance.name.lowercaseString;
+    if (name && [name containsString:@"dark"]) {
+      return @"dark";
+    }
+  }
+  return @"light";
+}
+
 - (void)setTitle:(NSString*)title font_type:(NSString*)font_type {
   NSMutableAttributedString* attributed_title =
       [[NSMutableAttributedString alloc] initWithString:title];
@@ -392,6 +402,10 @@ void TrayIconCocoa::SetIgnoreDoubleClickEvents(bool ignore) {
 
 bool TrayIconCocoa::GetIgnoreDoubleClickEvents() {
   return [status_item_view_ getIgnoreDoubleClickEvents];
+}
+
+std::string TrayIconCocoa::GetEffectiveAppearance() {
+  return base::SysNSStringToUTF8([status_item_view_ getEffectiveAppearance]);
 }
 
 void TrayIconCocoa::PopUpOnUI(base::WeakPtr<ElectronMenuModel> menu_model) {
