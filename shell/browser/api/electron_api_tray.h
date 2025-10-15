@@ -102,6 +102,7 @@ class Tray final : public gin_helper::DeprecatedWrappable<Tray>,
   std::string GetTitle();
   void SetIgnoreDoubleClickEvents(bool ignore);
   bool GetIgnoreDoubleClickEvents();
+  std::string GetEffectiveAppearance();
   void DisplayBalloon(gin_helper::ErrorThrower thrower,
                       const gin_helper::Dictionary& options);
   void RemoveBalloon();

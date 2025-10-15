@@ -290,6 +290,16 @@ bool Tray::GetIgnoreDoubleClickEvents() {
 #endif
 }
 
+std::string Tray::GetEffectiveAppearance() {
+  if (!CheckAlive())
+    return "unknown";
+#if BUILDFLAG(IS_MAC)
+  return tray_icon_->GetEffectiveAppearance();
+#else
+  return "unknown";
+#endif
+}
+
 void Tray::DisplayBalloon(gin_helper::ErrorThrower thrower,
                           const gin_helper::Dictionary& options) {
   if (!CheckAlive())
@@ -426,6 +436,7 @@ void Tray::FillObjectTemplate(v8::Isolate* isolate,
                  &Tray::SetIgnoreDoubleClickEvents)
       .SetMethod("getIgnoreDoubleClickEvents",
                  &Tray::GetIgnoreDoubleClickEvents)
+      .SetMethod("getEffectiveAppearance", &Tray::GetEffectiveAppearance)
       .SetMethod("displayBalloon", &Tray::DisplayBalloon)
       .SetMethod("removeBalloon", &Tray::RemoveBalloon)
       .SetMethod("focus", &Tray::Focus)
