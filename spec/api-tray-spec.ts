@@ -61,6 +61,14 @@ describe('tray module', () => {
     });
   });
 
+  ifdescribe(process.platform === 'darwin')('tray.getEffectiveAppearance()', () => {
+    it('returns a valid appearance value', () => {
+      const appearance = tray.getEffectiveAppearance();
+      expect(appearance).to.be.a('string');
+      expect(['dark', 'light', 'unknown']).to.include(appearance);
+    });
+  });
+
   describe('tray.setContextMenu(menu)', () => {
     it('accepts both null and Menu as parameters', () => {
       expect(() => { tray.setContextMenu(new Menu()); }).to.not.throw();
