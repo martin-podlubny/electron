@@ -281,6 +281,12 @@ This value is set to false by default.
 
 Returns `boolean` - Whether double click events will be ignored.
 
+#### `tray.getEffectiveAppearance()` _macOS_
+
+Returns `string` - Can be `dark`, `light` or `unknown`.
+
+Gets the effective appearance of the macOS menubar. This differs from the system theme setting and reflects the actual appearance of the menubar (which can be different from the overall system theme).
+
 #### `tray.displayBalloon(options)` _Windows_
 
 * `options` Object
