@@ -317,6 +317,27 @@ Marks the image as a macOS [template image][template-image].
 
 Returns `boolean` - Whether the image is a macOS [template image][template-image].
 
+#### `image.setTemplateImageRespectingColor(option)` _macOS_
+
+* `option` boolean
+
+Marks the image as a macOS template image that respects colors. Unlike the standard template image approach which converts the entire image to black+alpha, this method decomposes the image into:
+
+* **Colored parts** (any pixel that isn't pure black) - preserved with their original colors
+* **Black+alpha parts** (pure black or near-black pixels) - rendered as a template image, automatically adapting to light/dark mode (black in light mode, white in dark mode)
+
+This allows you to create tray icons that have both adaptive monochrome elements (that respond to system appearance) and fixed colored elements (that maintain their original colors).
+
+When enabled, the image is automatically converted to use this behavior. Setting to `false` reverts the image to normal (non-template) rendering.
+
+**Important:** This method is mutually exclusive with `setTemplateImage()`. Using one will override the behavior of the other:
+- `setTemplateImageRespectingColor(true)` creates a composite image that manually handles template rendering
+- `setTemplateImage(true)` uses macOS's built-in template image rendering (all black+alpha)
+
+If you need standard template behavior, use `setTemplateImage()`. If you need template behavior that preserves colors, use this method.
+
+**Note:** This method is only supported on macOS. On other platforms, it has no effect.
+
 #### `image.crop(rect)`
 
 * `rect` [Rectangle](structures/rectangle.md) - The area of the image to crop.

@@ -146,11 +146,241 @@ gin_helper::Handle<NativeImage> NativeImage::CreateFromNamedImage(
 }
 
 void NativeImage::SetTemplateImage(bool setAsTemplate) {
+  // Note: This method is mutually exclusive with SetTemplateImageRespectingColor.
+  // If SetTemplateImageRespectingColor was previously called, this will apply
+  // template rendering to the composite image (which is not desired).
+  // Users should use one approach or the other, not both.
   [image_.AsNSImage() setTemplate:setAsTemplate];
 }
 
 bool NativeImage::IsTemplateImage() {
   return [image_.AsNSImage() isTemplate];
+}
+
+// Helper function to decompose an image into colored and template parts
+static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* sourceImage) {
+  @autoreleasepool {
+    NSData* tiffData = [sourceImage TIFFRepresentation];
+    if (!tiffData) {
+      return {nil, nil};
+    }
+
+    NSBitmapImageRep* bitmap = [[NSBitmapImageRep alloc] initWithData:tiffData];
+    if (!bitmap) {
+      return {nil, nil};
+    }
+
+    NSInteger width = [bitmap pixelsWide];
+    NSInteger height = [bitmap pixelsHigh];
+
+    // Create two new bitmap reps for the decomposed parts
+    NSBitmapImageRep* coloredBitmap = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:nil
+                      pixelsWide:width
+                      pixelsHigh:height
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSDeviceRGBColorSpace
+                     bytesPerRow:width * 4
+                    bitsPerPixel:32];
+
+    NSBitmapImageRep* templateBitmap = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:nil
+                      pixelsWide:width
+                      pixelsHigh:height
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSDeviceRGBColorSpace
+                     bytesPerRow:width * 4
+                    bitsPerPixel:32];
+
+    if (!coloredBitmap || !templateBitmap) {
+      return {nil, nil};
+    }
+
+    // Process each pixel using raw bitmap data
+    unsigned char* bitmapData = [bitmap bitmapData];
+    unsigned char* coloredData = [coloredBitmap bitmapData];
+    unsigned char* templateData = [templateBitmap bitmapData];
+
+    if (!bitmapData || !coloredData || !templateData) {
+      return {nil, nil};
+    }
+
+    NSInteger bytesPerRow = [bitmap bytesPerRow];
+    NSInteger samplesPerPixel = [bitmap samplesPerPixel];
+
+    for (NSInteger y = 0; y < height; y++) {
+      for (NSInteger x = 0; x < width; x++) {
+        NSInteger pixelOffset = y * bytesPerRow + x * samplesPerPixel;
+
+        CGFloat r = bitmapData[pixelOffset] / 255.0;
+        CGFloat g = bitmapData[pixelOffset + 1] / 255.0;
+        CGFloat b = bitmapData[pixelOffset + 2] / 255.0;
+        CGFloat a = (samplesPerPixel >= 4) ? (bitmapData[pixelOffset + 3] / 255.0) : 1.0;
+
+        // Check if this is a black pixel (with any alpha) - threshold of 0.1 for near-black
+        BOOL isBlack = (r < 0.1) && (g < 0.1) && (b < 0.1);
+
+        if (isBlack && a > 0) {
+          // This is a black+alpha pixel - goes to template part
+          templateData[pixelOffset] = 0;
+          templateData[pixelOffset + 1] = 0;
+          templateData[pixelOffset + 2] = 0;
+          templateData[pixelOffset + 3] = (unsigned char)(a * 255.0);
+
+          coloredData[pixelOffset] = 0;
+          coloredData[pixelOffset + 1] = 0;
+          coloredData[pixelOffset + 2] = 0;
+          coloredData[pixelOffset + 3] = 0;
+        } else if (a > 0) {
+          // This is a colored pixel - goes to colored part
+          coloredData[pixelOffset] = (unsigned char)(r * 255.0);
+          coloredData[pixelOffset + 1] = (unsigned char)(g * 255.0);
+          coloredData[pixelOffset + 2] = (unsigned char)(b * 255.0);
+          coloredData[pixelOffset + 3] = (unsigned char)(a * 255.0);
+
+          templateData[pixelOffset] = 0;
+          templateData[pixelOffset + 1] = 0;
+          templateData[pixelOffset + 2] = 0;
+          templateData[pixelOffset + 3] = 0;
+        } else {
+          // Transparent pixel
+          coloredData[pixelOffset] = 0;
+          coloredData[pixelOffset + 1] = 0;
+          coloredData[pixelOffset + 2] = 0;
+          coloredData[pixelOffset + 3] = 0;
+
+          templateData[pixelOffset] = 0;
+          templateData[pixelOffset + 1] = 0;
+          templateData[pixelOffset + 2] = 0;
+          templateData[pixelOffset + 3] = 0;
+        }
+      }
+    }
+
+    // Create NSImages from the bitmaps
+    NSImage* coloredImage = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+    [coloredImage addRepresentation:coloredBitmap];
+
+    NSImage* templateImage = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+    [templateImage addRepresentation:templateBitmap];
+
+    return {coloredImage, templateImage};
+  }
+}
+
+// Helper function to create a tinted version of the template part
+static NSImage* TintTemplate(NSImage* templateImg, NSColor* tint, NSSize size) {
+  @autoreleasepool {
+    NSImage* tinted = [[NSImage alloc] initWithSize:size];
+    [tinted lockFocus];
+
+    [tint setFill];
+    NSRectFill(NSMakeRect(0, 0, size.width, size.height));
+
+    [templateImg drawInRect:NSMakeRect(0, 0, size.width, size.height)
+                   fromRect:NSMakeRect(0, 0, templateImg.size.width, templateImg.size.height)
+                  operation:NSCompositingOperationDestinationIn
+                   fraction:1.0];
+
+    [tinted unlockFocus];
+    return tinted;
+  }
+}
+
+void NativeImage::SetTemplateImageRespectingColor(bool enable) {
+  if (!enable) {
+    // Revert to the original image behavior
+    [image_.AsNSImage() setTemplate:NO];
+    return;
+  }
+
+  @autoreleasepool {
+    NSImage* sourceImage = image_.AsNSImage();
+    if (!sourceImage) {
+      return;
+    }
+
+    // Decompose the icon into colored and template parts
+    auto [coloredPart, templatePart] = DecomposeImage(sourceImage);
+
+    if (!coloredPart || !templatePart) {
+      return;
+    }
+
+    // Get the original image size
+    NSSize iconSize = [sourceImage size];
+
+    // Pre-create both light and dark tinted templates
+    NSImage* lightTemplate = TintTemplate(templatePart, [NSColor blackColor], iconSize);
+    NSImage* darkTemplate = TintTemplate(templatePart, [NSColor whiteColor], iconSize);
+
+    // Pre-create the final composites for both appearances
+    // This avoids compositing on every draw - just one image draw per frame
+    NSRect fullRect = NSMakeRect(0, 0, iconSize.width, iconSize.height);
+
+    // Light mode composite: colored parts + black template
+    NSImage* lightComposite = [[NSImage alloc] initWithSize:iconSize];
+    [lightComposite lockFocus];
+    [coloredPart drawInRect:fullRect
+                   fromRect:NSMakeRect(0, 0, coloredPart.size.width, coloredPart.size.height)
+                  operation:NSCompositingOperationSourceOver
+                   fraction:1.0];
+    [lightTemplate drawInRect:fullRect
+                     fromRect:fullRect
+                    operation:NSCompositingOperationSourceOver
+                     fraction:1.0];
+    [lightComposite unlockFocus];
+
+    // Dark mode composite: colored parts + white template
+    NSImage* darkComposite = [[NSImage alloc] initWithSize:iconSize];
+    [darkComposite lockFocus];
+    [coloredPart drawInRect:fullRect
+                   fromRect:NSMakeRect(0, 0, coloredPart.size.width, coloredPart.size.height)
+                  operation:NSCompositingOperationSourceOver
+                   fraction:1.0];
+    [darkTemplate drawInRect:fullRect
+                    fromRect:fullRect
+                   operation:NSCompositingOperationSourceOver
+                    fraction:1.0];
+    [darkComposite unlockFocus];
+
+    // Create an NSImage with a drawing handler that just picks the right composite
+    NSImage* composite = [NSImage imageWithSize:iconSize
+                                        flipped:NO
+                                 drawingHandler:^BOOL(NSRect destRect) {
+      // Get the current appearance
+      NSAppearance* appearance = [NSAppearance currentAppearance];
+      if (!appearance) {
+        appearance = [NSApp effectiveAppearance];
+      }
+
+      BOOL isDark = [[appearance name] rangeOfString:@"dark"
+                                             options:NSCaseInsensitiveSearch].location != NSNotFound;
+
+      // Just draw the appropriate pre-composed image - single draw operation!
+      NSImage* finalComposite = isDark ? darkComposite : lightComposite;
+      [finalComposite drawInRect:destRect
+                        fromRect:fullRect
+                       operation:NSCompositingOperationSourceOver
+                        fraction:1.0];
+
+      return YES;
+    }];
+
+    // Explicitly mark as NOT a template image since we're handling the
+    // template behavior manually. This prevents macOS from applying its own
+    // template rendering on top of ours.
+    [composite setTemplate:NO];
+
+    // Replace the current image with the composite
+    image_ = gfx::Image(composite);
+  }
 }
 
 }  // namespace electron::api

@@ -421,6 +421,8 @@ void NativeImage::SetTemplateImage(bool setAsTemplate) {}
 bool NativeImage::IsTemplateImage() {
   return false;
 }
+
+void NativeImage::SetTemplateImageRespectingColor(bool enable) {}
 #endif
 
 // static
@@ -598,6 +600,8 @@ gin::ObjectTemplateBuilder NativeImage::GetObjectTemplateBuilder(
       .SetMethod("isTemplateImage", &NativeImage::IsTemplateImage)
       .SetProperty("isMacTemplateImage", &NativeImage::IsTemplateImage,
                    &NativeImage::SetTemplateImage)
+      .SetMethod("setTemplateImageRespectingColor",
+                 &NativeImage::SetTemplateImageRespectingColor)
       .SetMethod("resize", &NativeImage::Resize)
       .SetMethod("crop", &NativeImage::Crop)
       .SetMethod("getAspectRatio", &NativeImage::GetAspectRatio)
