@@ -185,6 +185,10 @@ void Tray::OnDragEnded() {
   Emit("drag-end");
 }
 
+void Tray::OnEffectiveAppearanceChanged(const std::string& appearance) {
+  EmitWithoutEvent("update-icon-for-effective-appearance", appearance);
+}
+
 void Tray::Destroy() {
   Unpin();
   menu_.Reset();

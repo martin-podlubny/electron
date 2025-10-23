@@ -92,4 +92,9 @@ void TrayIcon::NotifyDragEnded() {
   observers_.Notify(&TrayIconObserver::OnDragEnded);
 }
 
+void TrayIcon::NotifyEffectiveAppearanceChanged(const std::string& appearance) {
+  observers_.Notify(&TrayIconObserver::OnEffectiveAppearanceChanged,
+                    appearance);
+}
+
 }  // namespace electron

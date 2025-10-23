@@ -89,6 +89,7 @@ class Tray final : public gin_helper::DeprecatedWrappable<Tray>,
   void OnMouseEntered(const gfx::Point& location, int modifiers) override;
   void OnMouseExited(const gfx::Point& location, int modifiers) override;
   void OnMouseMoved(const gfx::Point& location, int modifiers) override;
+  void OnEffectiveAppearanceChanged(const std::string& appearance) override;
 
   // JS API:
   void Destroy();

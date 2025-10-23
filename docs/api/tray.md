@@ -126,6 +126,39 @@ Returns:
 
 Emitted when the tray icon is double clicked.
 
+#### Event: 'update-icon-for-effective-appearance' _macOS_
+
+Returns:
+
+* `appearance` string - Can be `dark` or `light`.
+
+Emitted when the tray icon needs to be updated for a specific effective appearance context. This event fires when the system needs to render or cache the tray icon for different appearance contexts (e.g., light or dark menu bars).
+
+The effective appearance differs from the system theme setting and reflects the actual appearance of the menubar, which can vary per display based on wallpaper and other factors.
+
+**Note:** This event may fire multiple times in quick succession when the system is preparing icons for different appearance contexts (e.g., during initialization, when calling `setImage()`, or when the icon is clicked/pressed). Always use the `appearance` parameter to determine which icon to provide, rather than calling `getEffectiveAppearance()`. Both the normal icon via `setImage()` and the pressed icon via `setPressedImage()` can be set for the given appearance in this event handler.
+
+```js title='Updating icons for different appearances'
+const { app, Tray } = require('electron')
+
+let tray = null
+app.whenReady().then(() => {
+  tray = new Tray('/path/to/my/icon')
+
+  tray.on('update-icon-for-effective-appearance', (appearance) => {
+    console.log(`Updating icon for ${appearance} appearance`)
+    // Provide the appropriate icons for this appearance context
+    if (appearance === 'dark') {
+      tray.setImage('/path/to/light/icon')
+      tray.setPressedImage('/path/to/light/icon-pressed') // optional
+    } else {
+      tray.setImage('/path/to/dark/icon')
+      tray.setPressedImage('/path/to/dark/icon-pressed') // optional
+    }
+  })
+})
+```
+
 #### Event: 'middle-click' _Windows_
 
 Returns:
@@ -286,6 +319,8 @@ Returns `boolean` - Whether double click events will be ignored.
 Returns `string` - Can be `dark`, `light` or `unknown`.
 
 Gets the effective appearance of the macOS menubar. This differs from the system theme setting and reflects the actual appearance of the menubar (which can be different from the overall system theme).
+
+**Note:** In multi-screen setups where different displays have different menu bar appearances, this method returns the appearance of the main screen. When handling the `update-icon-for-effective-appearance` event, always use the `appearance` parameter provided by the event rather than calling this method, as the event parameter reflects the specific appearance context being rendered.
 
 #### `tray.displayBalloon(options)` _Windows_
 

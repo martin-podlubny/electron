@@ -25,6 +25,7 @@
   BOOL ignoreDoubleClickEvents_;
   NSStatusItem* __strong statusItem_;
   NSTrackingArea* __strong trackingArea_;
+  NSString* __strong lastEffectiveAppearance_;
 }
 
 @end  // @interface StatusItemView
@@ -32,6 +33,12 @@
 @implementation StatusItemView
 
 - (void)dealloc {
+  // Remove KVO observer for effectiveAppearance
+  if (statusItem_ && statusItem_.button) {
+    [statusItem_.button removeObserver:self
+                            forKeyPath:@"effectiveAppearance"
+                               context:nil];
+  }
   trayIcon_ = nil;
   menuController_ = nil;
 }
@@ -61,6 +68,13 @@
     [[statusItem_ button] setTarget:self];
     [[statusItem_ button] setAction:@selector(mouseDown:)];
     [self updateDimensions];
+
+    // Store initial appearance and observe changes
+    lastEffectiveAppearance_ = [self getEffectiveAppearance];
+    [[statusItem_ button] addObserver:self
+                           forKeyPath:@"effectiveAppearance"
+                              options:NSKeyValueObservingOptionNew
+                              context:nil];
   }
   return self;
 }
@@ -130,7 +144,8 @@
 
 - (NSString*)getEffectiveAppearance {
   if (statusItem_ && statusItem_.button) {
-    NSString* name = statusItem_.button.effectiveAppearance.name.lowercaseString;
+    NSString* name =
+        statusItem_.button.effectiveAppearance.name.lowercaseString;
     if (name && [name containsString:@"dark"]) {
       return @"dark";
     }
@@ -360,6 +375,22 @@
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
   [self handleDrop:sender];
   return YES;
+}
+
+- (void)observeValueForKeyPath:(NSString*)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary*)change
+                       context:(void*)context {
+  if ([keyPath isEqualToString:@"effectiveAppearance"]) {
+    NSString* currentAppearance = [self getEffectiveAppearance];
+    if (![currentAppearance isEqualToString:lastEffectiveAppearance_]) {
+      lastEffectiveAppearance_ = currentAppearance;
+      if (trayIcon_) {
+        trayIcon_->NotifyEffectiveAppearanceChanged(
+            base::SysNSStringToUTF8(currentAppearance));
+      }
+    }
+  }
 }
 
 @end

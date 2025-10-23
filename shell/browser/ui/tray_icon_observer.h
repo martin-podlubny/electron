@@ -39,6 +39,7 @@ class TrayIconObserver : public base::CheckedObserver {
   virtual void OnMouseEntered(const gfx::Point& location, int modifiers) {}
   virtual void OnMouseExited(const gfx::Point& location, int modifiers) {}
   virtual void OnMouseMoved(const gfx::Point& location, int modifiers) {}
+  virtual void OnEffectiveAppearanceChanged(const std::string& appearance) {}
 
  protected:
   ~TrayIconObserver() override = default;

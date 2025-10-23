@@ -133,6 +133,7 @@ class TrayIcon {
                          int modifiers = 0);
   void NotifyMouseMoved(const gfx::Point& location = gfx::Point(),
                         int modifiers = 0);
+  void NotifyEffectiveAppearanceChanged(const std::string& appearance);
 
  protected:
   TrayIcon();
