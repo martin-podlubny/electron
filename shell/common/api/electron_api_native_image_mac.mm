@@ -147,8 +147,8 @@ gin_helper::Handle<NativeImage> NativeImage::CreateFromNamedImage(
 
 void NativeImage::SetTemplateImage(bool setAsTemplate) {
   // Note: This method is mutually exclusive with
-  // SetTemplateWithColorImage. If
-  // SetTemplateWithColorImage was previously called, this will
+  // SetTemplateImageWithColor. If
+  // SetTemplateImageWithColor was previously called, this will
   // apply template rendering to the composite image (which is not desired).
   // Users should use one approach or the other, not both.
   [image_.AsNSImage() setTemplate:setAsTemplate];
@@ -163,7 +163,7 @@ bool NativeImage::IsTemplateImage() {
   return [image_.AsNSImage() isTemplate];
 }
 
-bool NativeImage::IsTemplateWithColorImage() {
+bool NativeImage::IsTemplateImageWithColor() {
   return is_template_with_color_;
 }
 
@@ -320,7 +320,7 @@ static NSImage* TintTemplate(NSImage* templateImg, NSColor* tint, NSSize size) {
   }
 }
 
-void NativeImage::SetTemplateWithColorImage(bool enable) {
+void NativeImage::SetTemplateImageWithColor(bool enable) {
   if (!enable) {
     // Revert to the original image behavior
     [image_.AsNSImage() setTemplate:NO];

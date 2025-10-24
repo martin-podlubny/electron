@@ -317,7 +317,7 @@ Marks the image as a macOS [template image][template-image].
 
 Returns `boolean` - Whether the image is a macOS [template image][template-image].
 
-#### `image.setTemplateWithColorImage(option)` _macOS_
+#### `image.setTemplateImageWithColor(option)` _macOS_
 
 * `option` boolean
 
@@ -336,14 +336,14 @@ When enabled, the image is automatically converted to use this behavior. Setting
 
 **Important:** This method is mutually exclusive with `setTemplateImage()`:
 
-* `setTemplateWithColorImage(true)` creates a composite image that manually handles template rendering and disables standard template mode
+* `setTemplateImageWithColor(true)` creates a composite image that manually handles template rendering and disables standard template mode
 * `setTemplateImage(true)` uses macOS's built-in template image rendering (all black+alpha) and disables template-with-color mode
 
 If you need standard template behavior, use `setTemplateImage()`. If you need template behavior that preserves colors, use this method.
 
 **Note:** This method is only supported on macOS. On other platforms, it has no effect.
 
-#### `image.isTemplateWithColorImage()` _macOS_
+#### `image.isTemplateImageWithColor()` _macOS_
 
 Returns `boolean` - Whether the image is a template image preserving colors.
 

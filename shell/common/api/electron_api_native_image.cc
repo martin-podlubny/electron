@@ -427,9 +427,9 @@ bool NativeImage::IsTemplateImage() {
   return false;
 }
 
-void NativeImage::SetTemplateWithColorImage(bool enable) {}
+void NativeImage::SetTemplateImageWithColor(bool enable) {}
 
-bool NativeImage::IsTemplateWithColorImage() {
+bool NativeImage::IsTemplateImageWithColor() {
   return false;
 }
 #endif
@@ -482,7 +482,7 @@ gin_helper::Handle<NativeImage> NativeImage::CreateFromPath(
   // Check for TemplateWithColor first, then Template (they're mutually
   // exclusive)
   if (IsTemplateWithColorFilename(image_path))
-    handle->SetTemplateWithColorImage(true);
+    handle->SetTemplateImageWithColor(true);
   else if (IsTemplateFilename(image_path))
     handle->SetTemplateImage(true);
 #endif
@@ -613,10 +613,10 @@ gin::ObjectTemplateBuilder NativeImage::GetObjectTemplateBuilder(
       .SetMethod("isTemplateImage", &NativeImage::IsTemplateImage)
       .SetProperty("isMacTemplateImage", &NativeImage::IsTemplateImage,
                    &NativeImage::SetTemplateImage)
-      .SetMethod("setTemplateWithColorImage",
-                 &NativeImage::SetTemplateWithColorImage)
-      .SetMethod("isTemplateWithColorImage",
-                 &NativeImage::IsTemplateWithColorImage)
+      .SetMethod("setTemplateImageWithColor",
+                 &NativeImage::SetTemplateImageWithColor)
+      .SetMethod("isTemplateImageWithColor",
+                 &NativeImage::IsTemplateImageWithColor)
       .SetMethod("resize", &NativeImage::Resize)
       .SetMethod("crop", &NativeImage::Crop)
       .SetMethod("getAspectRatio", &NativeImage::GetAspectRatio)

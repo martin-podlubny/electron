@@ -137,9 +137,9 @@ class NativeImage final : public gin_helper::DeprecatedWrappable<NativeImage> {
   // and dark parts (rendered as template, adapting to light/dark mode).
   // This is mutually exclusive with SetTemplateImage - enabling this will
   // disable standard template behavior.
-  void SetTemplateWithColorImage(bool enable);
+  void SetTemplateImageWithColor(bool enable);
   // Determine if the image is a template image preserving colors.
-  bool IsTemplateWithColorImage();
+  bool IsTemplateImageWithColor();
 
 #if BUILDFLAG(IS_WIN)
   base::FilePath hicon_path_;
