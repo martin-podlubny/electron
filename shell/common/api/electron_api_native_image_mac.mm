@@ -147,15 +147,15 @@ gin_helper::Handle<NativeImage> NativeImage::CreateFromNamedImage(
 
 void NativeImage::SetTemplateImage(bool setAsTemplate) {
   // Note: This method is mutually exclusive with
-  // SetPseudoTemplateImagePreservingColor. If
-  // SetPseudoTemplateImagePreservingColor was previously called, this will
+  // SetTemplateWithColorImage. If
+  // SetTemplateWithColorImage was previously called, this will
   // apply template rendering to the composite image (which is not desired).
   // Users should use one approach or the other, not both.
   [image_.AsNSImage() setTemplate:setAsTemplate];
 
-  // Clear pseudo-template state since we're using standard template mode
+  // Clear template-with-color state since we're using standard template mode
   if (setAsTemplate) {
-    is_pseudo_template_preserving_color_ = false;
+    is_template_with_color_ = false;
   }
 }
 
@@ -163,8 +163,8 @@ bool NativeImage::IsTemplateImage() {
   return [image_.AsNSImage() isTemplate];
 }
 
-bool NativeImage::IsPseudoTemplateImagePreservingColor() {
-  return is_pseudo_template_preserving_color_;
+bool NativeImage::IsTemplateWithColorImage() {
+  return is_template_with_color_;
 }
 
 // Helper function to decompose an image into colored and template parts.
@@ -320,11 +320,11 @@ static NSImage* TintTemplate(NSImage* templateImg, NSColor* tint, NSSize size) {
   }
 }
 
-void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
+void NativeImage::SetTemplateWithColorImage(bool enable) {
   if (!enable) {
     // Revert to the original image behavior
     [image_.AsNSImage() setTemplate:NO];
-    is_pseudo_template_preserving_color_ = false;
+    is_template_with_color_ = false;
     return;
   }
 
@@ -420,8 +420,8 @@ void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
     // Replace the current image with the composite
     image_ = gfx::Image(composite);
 
-    // Mark that this image is now a pseudo-template preserving colors
-    is_pseudo_template_preserving_color_ = true;
+    // Mark that this image is now a template with color
+    is_template_with_color_ = true;
   }
 }
 

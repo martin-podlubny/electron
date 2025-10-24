@@ -317,11 +317,11 @@ Marks the image as a macOS [template image][template-image].
 
 Returns `boolean` - Whether the image is a macOS [template image][template-image].
 
-#### `image.setPseudoTemplateImagePreservingColor(option)` _macOS_
+#### `image.setTemplateWithColorImage(option)` _macOS_
 
 * `option` boolean
 
-Marks the image as a pseudo-template image that preserves colors. Unlike the standard template image approach which converts the entire image to black+alpha, this method decomposes the image into:
+Marks the image as a template image that preserves colors. Unlike the standard template image approach which converts the entire image to black+alpha, this method decomposes the image into:
 
 * **Colored parts** (pixels with luminance ≥ 2%) - preserved with their original colors
 * **Pure black parts** (pixels with luminance < 2%) - rendered as a template image, automatically adapting to light/dark mode (black in light mode, white in dark mode)
@@ -332,17 +332,20 @@ This allows you to create tray icons that have both adaptive monochrome elements
 
 When enabled, the image is automatically converted to use this behavior. Setting to `false` reverts the image to normal (non-template) rendering.
 
+**Automatic filename detection:** Similar to `Template` images, you can name your files with a `TemplateWithColor` suffix (e.g., `iconTemplateWithColor.png`, `iconTemplateWithColor@2x.png`) and Electron will automatically enable this mode when loading the image via `nativeImage.createFromPath()`.
+
 **Important:** This method is mutually exclusive with `setTemplateImage()`:
-- `setPseudoTemplateImagePreservingColor(true)` creates a composite image that manually handles template rendering and disables standard template mode
-- `setTemplateImage(true)` uses macOS's built-in template image rendering (all black+alpha) and disables pseudo-template mode
+
+* `setTemplateWithColorImage(true)` creates a composite image that manually handles template rendering and disables standard template mode
+* `setTemplateImage(true)` uses macOS's built-in template image rendering (all black+alpha) and disables template-with-color mode
 
 If you need standard template behavior, use `setTemplateImage()`. If you need template behavior that preserves colors, use this method.
 
 **Note:** This method is only supported on macOS. On other platforms, it has no effect.
 
-#### `image.isPseudoTemplateImagePreservingColor()` _macOS_
+#### `image.isTemplateWithColorImage()` _macOS_
 
-Returns `boolean` - Whether the image is a pseudo-template image preserving colors.
+Returns `boolean` - Whether the image is a template image preserving colors.
 
 #### `image.crop(rect)`
 

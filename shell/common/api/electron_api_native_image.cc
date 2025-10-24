@@ -99,6 +99,11 @@ bool IsTemplateFilename(const base::FilePath& path) {
   return (base::MatchPattern(path.value(), "*Template.*") ||
           base::MatchPattern(path.value(), "*Template@*x.*"));
 }
+
+bool IsTemplateWithColorFilename(const base::FilePath& path) {
+  return (base::MatchPattern(path.value(), "*TemplateWithColor.*") ||
+          base::MatchPattern(path.value(), "*TemplateWithColor@*x.*"));
+}
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -422,9 +427,9 @@ bool NativeImage::IsTemplateImage() {
   return false;
 }
 
-void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {}
+void NativeImage::SetTemplateWithColorImage(bool enable) {}
 
-bool NativeImage::IsPseudoTemplateImagePreservingColor() {
+bool NativeImage::IsTemplateWithColorImage() {
   return false;
 }
 #endif
@@ -474,7 +479,11 @@ gin_helper::Handle<NativeImage> NativeImage::CreateFromPath(
   gfx::Image image(image_skia);
   gin_helper::Handle<NativeImage> handle = Create(isolate, image);
 #if BUILDFLAG(IS_MAC)
-  if (IsTemplateFilename(image_path))
+  // Check for TemplateWithColor first, then Template (they're mutually
+  // exclusive)
+  if (IsTemplateWithColorFilename(image_path))
+    handle->SetTemplateWithColorImage(true);
+  else if (IsTemplateFilename(image_path))
     handle->SetTemplateImage(true);
 #endif
   return handle;
@@ -604,10 +613,10 @@ gin::ObjectTemplateBuilder NativeImage::GetObjectTemplateBuilder(
       .SetMethod("isTemplateImage", &NativeImage::IsTemplateImage)
       .SetProperty("isMacTemplateImage", &NativeImage::IsTemplateImage,
                    &NativeImage::SetTemplateImage)
-      .SetMethod("setPseudoTemplateImagePreservingColor",
-                 &NativeImage::SetPseudoTemplateImagePreservingColor)
-      .SetMethod("isPseudoTemplateImagePreservingColor",
-                 &NativeImage::IsPseudoTemplateImagePreservingColor)
+      .SetMethod("setTemplateWithColorImage",
+                 &NativeImage::SetTemplateWithColorImage)
+      .SetMethod("isTemplateWithColorImage",
+                 &NativeImage::IsTemplateWithColorImage)
       .SetMethod("resize", &NativeImage::Resize)
       .SetMethod("crop", &NativeImage::Crop)
       .SetMethod("getAspectRatio", &NativeImage::GetAspectRatio)
