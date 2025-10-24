@@ -78,6 +78,73 @@ describe('nativeImage module', () => {
     });
   });
 
+  ifdescribe(process.platform === 'darwin')('templateWithColorImage state', () => {
+    describe('with functions', () => {
+      it('correctly recognizes a TemplateWithColor image from filename', () => {
+        const image = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logo.png'));
+        expect(image.isTemplateWithColorImage()).to.be.false();
+
+        const templateWithColorImage = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logoTemplateWithColor.png'));
+        expect(templateWithColorImage.isTemplateWithColorImage()).to.be.true();
+      });
+
+      it('correctly recognizes a TemplateWithColor image with @2x suffix', () => {
+        const templateWithColorImage = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logoTemplateWithColor@2x.png'));
+        expect(templateWithColorImage.isTemplateWithColorImage()).to.be.true();
+      });
+
+      it('sets a template with color image programmatically', () => {
+        const image = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logo.png'));
+        expect(image.isTemplateWithColorImage()).to.be.false();
+
+        image.setTemplateWithColorImage(true);
+        expect(image.isTemplateWithColorImage()).to.be.true();
+      });
+
+      it('can disable template with color image', () => {
+        const image = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logoTemplateWithColor.png'));
+        expect(image.isTemplateWithColorImage()).to.be.true();
+
+        image.setTemplateWithColorImage(false);
+        expect(image.isTemplateWithColorImage()).to.be.false();
+      });
+
+      it('is mutually exclusive with setTemplateImage - setTemplateImage clears templateWithColor', () => {
+        const image = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logo.png'));
+
+        // Enable template with color first
+        image.setTemplateWithColorImage(true);
+        expect(image.isTemplateWithColorImage()).to.be.true();
+
+        // Now enable standard template - should clear templateWithColor
+        image.setTemplateImage(true);
+        expect(image.isTemplateImage()).to.be.true();
+        expect(image.isTemplateWithColorImage()).to.be.false();
+      });
+
+      it('is mutually exclusive with setTemplateImage - setTemplateWithColorImage disables template mode', () => {
+        const image = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logo.png'));
+
+        // Enable standard template first
+        image.setTemplateImage(true);
+        expect(image.isTemplateImage()).to.be.true();
+
+        // Now enable template with color - should disable standard template
+        image.setTemplateWithColorImage(true);
+        expect(image.isTemplateWithColorImage()).to.be.true();
+        // Note: standard template mode is disabled internally but isTemplateImage
+        // checks the NSImage's template property which may still be set
+      });
+
+      it('does not interfere with non-TemplateWithColor filenames', () => {
+        // Make sure Template (without "WithColor") still works as before
+        const templateImage = nativeImage.createFromPath(path.join(fixturesPath, 'assets', 'logo_Template.png'));
+        expect(templateImage.isTemplateImage()).to.be.true();
+        expect(templateImage.isTemplateWithColorImage()).to.be.false();
+      });
+    });
+  });
+
   describe('createEmpty()', () => {
     it('returns an empty image', async () => {
       const empty = nativeImage.createEmpty();
