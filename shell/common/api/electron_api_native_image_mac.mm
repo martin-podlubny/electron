@@ -9,7 +9,6 @@
 #include <vector>
 
 #import <Cocoa/Cocoa.h>
-#import <CoreImage/CoreImage.h>
 #import <QuickLook/QuickLook.h>
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 
@@ -168,140 +167,136 @@ bool NativeImage::IsPseudoTemplateImagePreservingColor() {
   return is_pseudo_template_preserving_color_;
 }
 
-// Helper function to decompose an image into colored and template parts using
-// Core Image. Decompose: near-black (by luminance) -> template alpha;
-// everything else -> colored. Threshold is in [0..1] (e.g. 0.10 for 10%
-// brightness).
+// Helper function to decompose an image into colored and template parts.
+// Decompose: near-black pixels (RGB < threshold) -> template (black+alpha);
+// everything else -> colored (preserve original RGB+alpha).
+// Threshold is in [0..1] (e.g. 0.1 for pixels with R,G,B < 10% brightness).
 static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source,
                                                     CGFloat threshold) {
   @autoreleasepool {
-    // Resolve to CGImage in sRGB, so "near-black" is predictable
-    CGImageRef cg = [source CGImageForProposedRect:NULL context:nil hints:nil];
-    if (!cg) {
+    // Get TIFF representation and create bitmap
+    NSData* tiffData = [source TIFFRepresentation];
+    if (!tiffData) {
       return {nil, nil};
     }
 
-    CGSize size = {(CGFloat)CGImageGetWidth(cg), (CGFloat)CGImageGetHeight(cg)};
-    CGColorSpaceRef sRGB = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    if (!sRGB) {
+    NSBitmapImageRep* bitmap = [NSBitmapImageRep imageRepWithData:tiffData];
+    if (!bitmap) {
       return {nil, nil};
     }
 
-    NSDictionary* opts = @{kCIImageColorSpace : (__bridge id)sRGB};
-    CIImage* input = [[CIImage alloc] initWithCGImage:cg options:opts];
+    NSInteger width = [bitmap pixelsWide];
+    NSInteger height = [bitmap pixelsHigh];
 
-    // --- 1) Build a mask for near-black pixels ---
-    // Convert to grayscale (luminance)
-    CIFilter* grayscale = [CIFilter filterWithName:@"CIPhotoEffectMono"];
-    [grayscale setValue:input forKey:kCIInputImageKey];
-    CIImage* gray = grayscale.outputImage;
+    // Create two new bitmap reps for the decomposed parts
+    NSBitmapImageRep* coloredBitmap =
+        [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nil
+                                                pixelsWide:width
+                                                pixelsHigh:height
+                                             bitsPerSample:8
+                                           samplesPerPixel:4
+                                                  hasAlpha:YES
+                                                  isPlanar:NO
+                                            colorSpaceName:NSDeviceRGBColorSpace
+                                               bytesPerRow:width * 4
+                                              bitsPerPixel:32];
 
-    // Amplify dark pixels: pixels below threshold become very bright, others
-    // become dark Using exposure adjustment: dark pixels (< threshold ~0.02)
-    // get boosted significantly
-    CIFilter* exposure = [CIFilter filterWithName:@"CIExposureAdjust"];
-    [exposure setValue:gray forKey:kCIInputImageKey];
-    [exposure setValue:@(-3.0) forKey:@"inputEV"];  // Darken significantly
-    CIImage* darkened = exposure.outputImage;
+    NSBitmapImageRep* templateBitmap =
+        [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nil
+                                                pixelsWide:width
+                                                pixelsHigh:height
+                                             bitsPerSample:8
+                                           samplesPerPixel:4
+                                                  hasAlpha:YES
+                                                  isPlanar:NO
+                                            colorSpaceName:NSDeviceRGBColorSpace
+                                               bytesPerRow:width * 4
+                                              bitsPerPixel:32];
 
-    // Invert so that originally dark pixels are now bright
-    CIFilter* invert1 = [CIFilter filterWithName:@"CIColorInvert"];
-    [invert1 setValue:darkened forKey:kCIInputImageKey];
-    CIImage* inverted = invert1.outputImage;
+    if (!coloredBitmap || !templateBitmap) {
+      return {nil, nil};
+    }
 
-    // Apply a threshold to create a binary mask
-    CIFilter* posterize = [CIFilter filterWithName:@"CIColorPosterize"];
-    [posterize setValue:inverted forKey:kCIInputImageKey];
-    [posterize setValue:@(2) forKey:@"inputLevels"];  // Binary: black or white
-    CIImage* maskRGBA = posterize.outputImage;
+    // Get raw bitmap data pointers
+    unsigned char* bitmapData = [bitmap bitmapData];
+    unsigned char* coloredData = [coloredBitmap bitmapData];
+    unsigned char* templateData = [templateBitmap bitmapData];
 
-    // Keep only one channel as alpha mask
-    CIFilter* maskToAlpha = [CIFilter filterWithName:@"CIMaskToAlpha"];
-    [maskToAlpha setValue:maskRGBA forKey:@"inputImage"];
-    CIImage* maskA = maskToAlpha.outputImage;  // A=mask, RGB=irrelevant
+    if (!bitmapData || !coloredData || !templateData) {
+      return {nil, nil};
+    }
 
-    // --- 2) Build TEMPLATE: black with alpha = originalAlpha * mask ---
-    // Extract original alpha into a grayscale
-    CIFilter* extractA = [CIFilter filterWithName:@"CIColorMatrix"];
-    [extractA setValue:input forKey:@"inputImage"];
-    // Map A -> RGB=0, A -> A
-    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                forKey:@"inputRVector"];
-    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                forKey:@"inputGVector"];
-    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                forKey:@"inputBVector"];
-    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1]
-                forKey:@"inputAVector"];  // keep alpha
-    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                forKey:@"inputBiasVector"];
-    CIImage* alphaOnly = extractA.outputImage;
+    NSInteger bytesPerRow = [bitmap bytesPerRow];
+    NSInteger samplesPerPixel = [bitmap samplesPerPixel];
 
-    // Multiply original alpha by mask: A = A * mask
-    CIFilter* multiplyAlpha =
-        [CIFilter filterWithName:@"CIMultiplyCompositing"];
-    // CIMultiplyCompositing does: dst * src (per channel). We only care about
-    // A. Put alphaOnly as dst, maskA as src:
-    [multiplyAlpha setValue:maskA forKey:@"inputImage"];
-    [multiplyAlpha setValue:alphaOnly forKey:@"inputBackgroundImage"];
-    CIImage* templAlpha = multiplyAlpha.outputImage;
+// Suppress unsafe buffer warnings for direct bitmap manipulation
+// This is intentional for performance-critical pixel processing
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
 
-    // Build black RGBA with that alpha
-    CIFilter* blackWithAlpha = [CIFilter filterWithName:@"CIColorMatrix"];
-    [blackWithAlpha setValue:templAlpha forKey:@"inputImage"];
-    // Zero RGB, pass through A
-    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                      forKey:@"inputRVector"];
-    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                      forKey:@"inputGVector"];
-    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                      forKey:@"inputBVector"];
-    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1]
-                      forKey:@"inputAVector"];
-    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
-                      forKey:@"inputBiasVector"];
-    CIImage* templateCI = blackWithAlpha.outputImage;
+    // Process each pixel
+    for (NSInteger y = 0; y < height; y++) {
+      for (NSInteger x = 0; x < width; x++) {
+        NSInteger pixelOffset = y * bytesPerRow + x * samplesPerPixel;
 
-    // --- 3) Build COLORED: original with alpha knocked out where mask=1 ---
-    // invMask = 1 - mask
-    CIFilter* invert = [CIFilter filterWithName:@"CIColorInvert"];
-    [invert setValue:maskA forKey:@"inputImage"];
-    CIImage* invMask = invert.outputImage;
+        CGFloat r = bitmapData[pixelOffset] / 255.0;
+        CGFloat g = bitmapData[pixelOffset + 1] / 255.0;
+        CGFloat b = bitmapData[pixelOffset + 2] / 255.0;
+        CGFloat a =
+            samplesPerPixel >= 4 ? bitmapData[pixelOffset + 3] / 255.0 : 1.0;
 
-    // newAlpha = originalAlpha * invMask
-    CIFilter* coloredA = [CIFilter filterWithName:@"CIMultiplyCompositing"];
-    [coloredA setValue:invMask forKey:@"inputImage"];
-    [coloredA setValue:alphaOnly forKey:@"inputBackgroundImage"];
-    CIImage* coloredAlpha = coloredA.outputImage;
+        // Check if this is a black pixel - threshold for near-black
+        bool isBlack = r < threshold && g < threshold && b < threshold;
 
-    // Replace input's alpha with newAlpha (keep RGB)
-    CIFilter* replaceA = [CIFilter filterWithName:@"CIBlendWithAlphaMask"];
-    [replaceA setValue:input forKey:@"inputImage"];  // source RGB
-    [replaceA setValue:[CIImage imageWithColor:[CIColor colorWithRed:0
-                                                               green:0
-                                                                blue:0
-                                                               alpha:0]]
-                forKey:@"inputBackgroundImage"];
-    [replaceA setValue:coloredAlpha
-                forKey:@"inputMaskImage"];  // uses mask's luminance as alpha
-    CIImage* coloredCI = replaceA.outputImage;
+        if (isBlack && a > 0) {
+          // This is a black+alpha pixel - goes to template part
+          templateData[pixelOffset] = 0;
+          templateData[pixelOffset + 1] = 0;
+          templateData[pixelOffset + 2] = 0;
+          templateData[pixelOffset + 3] = (unsigned char)(a * 255.0);
 
-    // --- 4) Convert to NSImage (no lazy CI surfaces lingering) ---
-    CIContext* ctx = [CIContext contextWithOptions:@{
-      kCIContextUseSoftwareRenderer : @NO
-    }];
-    CGImageRef templCG = [ctx createCGImage:templateCI
-                                   fromRect:templateCI.extent];
-    CGImageRef colCG = [ctx createCGImage:coloredCI fromRect:coloredCI.extent];
+          coloredData[pixelOffset] = 0;
+          coloredData[pixelOffset + 1] = 0;
+          coloredData[pixelOffset + 2] = 0;
+          coloredData[pixelOffset + 3] = 0;
+        } else if (a > 0) {
+          // This is a colored pixel - goes to colored part
+          coloredData[pixelOffset] = (unsigned char)(r * 255.0);
+          coloredData[pixelOffset + 1] = (unsigned char)(g * 255.0);
+          coloredData[pixelOffset + 2] = (unsigned char)(b * 255.0);
+          coloredData[pixelOffset + 3] = (unsigned char)(a * 255.0);
 
-    NSImage* templNS = [[NSImage alloc] initWithCGImage:templCG size:size];
-    NSImage* colNS = [[NSImage alloc] initWithCGImage:colCG size:size];
+          templateData[pixelOffset] = 0;
+          templateData[pixelOffset + 1] = 0;
+          templateData[pixelOffset + 2] = 0;
+          templateData[pixelOffset + 3] = 0;
+        } else {
+          // Transparent pixel
+          coloredData[pixelOffset] = 0;
+          coloredData[pixelOffset + 1] = 0;
+          coloredData[pixelOffset + 2] = 0;
+          coloredData[pixelOffset + 3] = 0;
 
-    CGImageRelease(templCG);
-    CGImageRelease(colCG);
-    CGColorSpaceRelease(sRGB);
+          templateData[pixelOffset] = 0;
+          templateData[pixelOffset + 1] = 0;
+          templateData[pixelOffset + 2] = 0;
+          templateData[pixelOffset + 3] = 0;
+        }
+      }
+    }
 
-    return {colNS, templNS};
+#pragma clang diagnostic pop
+
+    // Create NSImages from the bitmaps
+    NSImage* coloredImage =
+        [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+    [coloredImage addRepresentation:coloredBitmap];
+
+    NSImage* templateImage =
+        [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+    [templateImage addRepresentation:templateBitmap];
+
+    return {coloredImage, templateImage};
   }
 }
 
@@ -340,9 +335,9 @@ void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
     }
 
     // Decompose the icon into colored and template parts
-    // Threshold of 0.02 means pixels with luminance < 2% are considered "pure
-    // black" This is very selective - only truly black pixels get inverted
-    auto [coloredPart, templatePart] = DecomposeImage(sourceImage, 0.02);
+    // Threshold of 0.1 means pixels with RGB values < 10% are considered
+    // "near-black" and will be treated as template pixels
+    auto [coloredPart, templatePart] = DecomposeImage(sourceImage, 0.1);
 
     if (!coloredPart || !templatePart) {
       return;
