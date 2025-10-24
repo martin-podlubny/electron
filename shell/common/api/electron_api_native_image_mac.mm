@@ -147,9 +147,10 @@ gin_helper::Handle<NativeImage> NativeImage::CreateFromNamedImage(
 }
 
 void NativeImage::SetTemplateImage(bool setAsTemplate) {
-  // Note: This method is mutually exclusive with SetPseudoTemplateImagePreservingColor.
-  // If SetPseudoTemplateImagePreservingColor was previously called, this will apply
-  // template rendering to the composite image (which is not desired).
+  // Note: This method is mutually exclusive with
+  // SetPseudoTemplateImagePreservingColor. If
+  // SetPseudoTemplateImagePreservingColor was previously called, this will
+  // apply template rendering to the composite image (which is not desired).
   // Users should use one approach or the other, not both.
   [image_.AsNSImage() setTemplate:setAsTemplate];
 
@@ -167,10 +168,12 @@ bool NativeImage::IsPseudoTemplateImagePreservingColor() {
   return is_pseudo_template_preserving_color_;
 }
 
-// Helper function to decompose an image into colored and template parts using Core Image.
-// Decompose: near-black (by luminance) -> template alpha; everything else -> colored.
-// Threshold is in [0..1] (e.g. 0.10 for 10% brightness).
-static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source, CGFloat threshold) {
+// Helper function to decompose an image into colored and template parts using
+// Core Image. Decompose: near-black (by luminance) -> template alpha;
+// everything else -> colored. Threshold is in [0..1] (e.g. 0.10 for 10%
+// brightness).
+static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source,
+                                                    CGFloat threshold) {
   @autoreleasepool {
     // Resolve to CGImage in sRGB, so "near-black" is predictable
     CGImageRef cg = [source CGImageForProposedRect:NULL context:nil hints:nil];
@@ -187,85 +190,108 @@ static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source, CGFloat thr
     NSDictionary* opts = @{kCIImageColorSpace : (__bridge id)sRGB};
     CIImage* input = [[CIImage alloc] initWithCGImage:cg options:opts];
 
-    // --- 1) Build a mask using a CIColorKernel ---
-    // Using luminance so we don't need max(r,g,b). sRGB luma coefficients.
-    static CIColorKernel* MaskKernel;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-      NSString* src =
-          @"kernel vec4 maskForNearBlack(__sample s, float thr) {"
-          @"   float a = s.a;"
-          @"   // sRGB luminance (Rec. 709):"
-          @"   float y = dot(s.rgb, vec3(0.2126, 0.7152, 0.0722));"
-          @"   float isBlack = step(y, thr) * step(0.0, a);"
-          @"   // return single-channel mask (in alpha):"
-          @"   return vec4(isBlack, isBlack, isBlack, isBlack);"
-          @"}";
-      MaskKernel = [CIColorKernel kernelWithString:src];
-    });
+    // --- 1) Build a mask for near-black pixels ---
+    // Convert to grayscale (luminance)
+    CIFilter* grayscale = [CIFilter filterWithName:@"CIPhotoEffectMono"];
+    [grayscale setValue:input forKey:kCIInputImageKey];
+    CIImage* gray = grayscale.outputImage;
 
-    CIImage* maskRGBA = [MaskKernel applyWithExtent:input.extent
-                                          arguments:@[ input, @(threshold) ]];
+    // Amplify dark pixels: pixels below threshold become very bright, others
+    // become dark Using exposure adjustment: dark pixels (< threshold ~0.02)
+    // get boosted significantly
+    CIFilter* exposure = [CIFilter filterWithName:@"CIExposureAdjust"];
+    [exposure setValue:gray forKey:kCIInputImageKey];
+    [exposure setValue:@(-3.0) forKey:@"inputEV"];  // Darken significantly
+    CIImage* darkened = exposure.outputImage;
+
+    // Invert so that originally dark pixels are now bright
+    CIFilter* invert1 = [CIFilter filterWithName:@"CIColorInvert"];
+    [invert1 setValue:darkened forKey:kCIInputImageKey];
+    CIImage* inverted = invert1.outputImage;
+
+    // Apply a threshold to create a binary mask
+    CIFilter* posterize = [CIFilter filterWithName:@"CIColorPosterize"];
+    [posterize setValue:inverted forKey:kCIInputImageKey];
+    [posterize setValue:@(2) forKey:@"inputLevels"];  // Binary: black or white
+    CIImage* maskRGBA = posterize.outputImage;
 
     // Keep only one channel as alpha mask
     CIFilter* maskToAlpha = [CIFilter filterWithName:@"CIMaskToAlpha"];
-    maskToAlpha[@"inputImage"] = maskRGBA;
+    [maskToAlpha setValue:maskRGBA forKey:@"inputImage"];
     CIImage* maskA = maskToAlpha.outputImage;  // A=mask, RGB=irrelevant
 
     // --- 2) Build TEMPLATE: black with alpha = originalAlpha * mask ---
     // Extract original alpha into a grayscale
     CIFilter* extractA = [CIFilter filterWithName:@"CIColorMatrix"];
-    extractA[@"inputImage"] = input;
+    [extractA setValue:input forKey:@"inputImage"];
     // Map A -> RGB=0, A -> A
-    extractA[@"inputRVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
-    extractA[@"inputGVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
-    extractA[@"inputBVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
-    extractA[@"inputAVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:1];  // keep alpha
-    extractA[@"inputBiasVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
+    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                forKey:@"inputRVector"];
+    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                forKey:@"inputGVector"];
+    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                forKey:@"inputBVector"];
+    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1]
+                forKey:@"inputAVector"];  // keep alpha
+    [extractA setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                forKey:@"inputBiasVector"];
     CIImage* alphaOnly = extractA.outputImage;
 
     // Multiply original alpha by mask: A = A * mask
-    CIFilter* multiplyAlpha = [CIFilter filterWithName:@"CIMultiplyCompositing"];
-    // CIMultiplyCompositing does: dst * src (per channel). We only care about A.
-    // Put alphaOnly as dst, maskA as src:
-    multiplyAlpha[@"inputImage"] = maskA;
-    multiplyAlpha[@"inputBackgroundImage"] = alphaOnly;
+    CIFilter* multiplyAlpha =
+        [CIFilter filterWithName:@"CIMultiplyCompositing"];
+    // CIMultiplyCompositing does: dst * src (per channel). We only care about
+    // A. Put alphaOnly as dst, maskA as src:
+    [multiplyAlpha setValue:maskA forKey:@"inputImage"];
+    [multiplyAlpha setValue:alphaOnly forKey:@"inputBackgroundImage"];
     CIImage* templAlpha = multiplyAlpha.outputImage;
 
     // Build black RGBA with that alpha
     CIFilter* blackWithAlpha = [CIFilter filterWithName:@"CIColorMatrix"];
-    blackWithAlpha[@"inputImage"] = templAlpha;
+    [blackWithAlpha setValue:templAlpha forKey:@"inputImage"];
     // Zero RGB, pass through A
-    blackWithAlpha[@"inputRVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
-    blackWithAlpha[@"inputGVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
-    blackWithAlpha[@"inputBVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
-    blackWithAlpha[@"inputAVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:1];
-    blackWithAlpha[@"inputBiasVector"] = [CIVector vectorWithX:0 Y:0 Z:0 W:0];
+    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                      forKey:@"inputRVector"];
+    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                      forKey:@"inputGVector"];
+    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                      forKey:@"inputBVector"];
+    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1]
+                      forKey:@"inputAVector"];
+    [blackWithAlpha setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+                      forKey:@"inputBiasVector"];
     CIImage* templateCI = blackWithAlpha.outputImage;
 
     // --- 3) Build COLORED: original with alpha knocked out where mask=1 ---
     // invMask = 1 - mask
     CIFilter* invert = [CIFilter filterWithName:@"CIColorInvert"];
-    invert[@"inputImage"] = maskA;
+    [invert setValue:maskA forKey:@"inputImage"];
     CIImage* invMask = invert.outputImage;
 
     // newAlpha = originalAlpha * invMask
     CIFilter* coloredA = [CIFilter filterWithName:@"CIMultiplyCompositing"];
-    coloredA[@"inputImage"] = invMask;
-    coloredA[@"inputBackgroundImage"] = alphaOnly;
+    [coloredA setValue:invMask forKey:@"inputImage"];
+    [coloredA setValue:alphaOnly forKey:@"inputBackgroundImage"];
     CIImage* coloredAlpha = coloredA.outputImage;
 
     // Replace input's alpha with newAlpha (keep RGB)
     CIFilter* replaceA = [CIFilter filterWithName:@"CIBlendWithAlphaMask"];
-    replaceA[@"inputImage"] = input;  // source RGB
-    replaceA[@"inputBackgroundImage"] =
-        [CIImage imageWithColor:[CIColor colorWithRed:0 green:0 blue:0 alpha:0]];
-    replaceA[@"inputMaskImage"] = coloredAlpha;  // uses mask's luminance as alpha
+    [replaceA setValue:input forKey:@"inputImage"];  // source RGB
+    [replaceA setValue:[CIImage imageWithColor:[CIColor colorWithRed:0
+                                                               green:0
+                                                                blue:0
+                                                               alpha:0]]
+                forKey:@"inputBackgroundImage"];
+    [replaceA setValue:coloredAlpha
+                forKey:@"inputMaskImage"];  // uses mask's luminance as alpha
     CIImage* coloredCI = replaceA.outputImage;
 
     // --- 4) Convert to NSImage (no lazy CI surfaces lingering) ---
-    CIContext* ctx = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer : @NO}];
-    CGImageRef templCG = [ctx createCGImage:templateCI fromRect:templateCI.extent];
+    CIContext* ctx = [CIContext contextWithOptions:@{
+      kCIContextUseSoftwareRenderer : @NO
+    }];
+    CGImageRef templCG = [ctx createCGImage:templateCI
+                                   fromRect:templateCI.extent];
     CGImageRef colCG = [ctx createCGImage:coloredCI fromRect:coloredCI.extent];
 
     NSImage* templNS = [[NSImage alloc] initWithCGImage:templCG size:size];
@@ -289,7 +315,8 @@ static NSImage* TintTemplate(NSImage* templateImg, NSColor* tint, NSSize size) {
     NSRectFill(NSMakeRect(0, 0, size.width, size.height));
 
     [templateImg drawInRect:NSMakeRect(0, 0, size.width, size.height)
-                   fromRect:NSMakeRect(0, 0, templateImg.size.width, templateImg.size.height)
+                   fromRect:NSMakeRect(0, 0, templateImg.size.width,
+                                       templateImg.size.height)
                   operation:NSCompositingOperationDestinationIn
                    fraction:1.0];
 
@@ -313,8 +340,8 @@ void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
     }
 
     // Decompose the icon into colored and template parts
-    // Threshold of 0.02 means pixels with luminance < 2% are considered "pure black"
-    // This is very selective - only truly black pixels get inverted
+    // Threshold of 0.02 means pixels with luminance < 2% are considered "pure
+    // black" This is very selective - only truly black pixels get inverted
     auto [coloredPart, templatePart] = DecomposeImage(sourceImage, 0.02);
 
     if (!coloredPart || !templatePart) {
@@ -325,8 +352,10 @@ void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
     NSSize iconSize = [sourceImage size];
 
     // Pre-create both light and dark tinted templates
-    NSImage* lightTemplate = TintTemplate(templatePart, [NSColor blackColor], iconSize);
-    NSImage* darkTemplate = TintTemplate(templatePart, [NSColor whiteColor], iconSize);
+    NSImage* lightTemplate =
+        TintTemplate(templatePart, [NSColor blackColor], iconSize);
+    NSImage* darkTemplate =
+        TintTemplate(templatePart, [NSColor whiteColor], iconSize);
 
     // Pre-create the final composites for both appearances
     // This avoids compositing on every draw - just one image draw per frame
@@ -336,7 +365,8 @@ void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
     NSImage* lightComposite = [[NSImage alloc] initWithSize:iconSize];
     [lightComposite lockFocus];
     [coloredPart drawInRect:fullRect
-                   fromRect:NSMakeRect(0, 0, coloredPart.size.width, coloredPart.size.height)
+                   fromRect:NSMakeRect(0, 0, coloredPart.size.width,
+                                       coloredPart.size.height)
                   operation:NSCompositingOperationSourceOver
                    fraction:1.0];
     [lightTemplate drawInRect:fullRect
@@ -349,7 +379,8 @@ void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
     NSImage* darkComposite = [[NSImage alloc] initWithSize:iconSize];
     [darkComposite lockFocus];
     [coloredPart drawInRect:fullRect
-                   fromRect:NSMakeRect(0, 0, coloredPart.size.width, coloredPart.size.height)
+                   fromRect:NSMakeRect(0, 0, coloredPart.size.width,
+                                       coloredPart.size.height)
                   operation:NSCompositingOperationSourceOver
                    fraction:1.0];
     [darkTemplate drawInRect:fullRect
@@ -358,28 +389,33 @@ void NativeImage::SetPseudoTemplateImagePreservingColor(bool enable) {
                     fraction:1.0];
     [darkComposite unlockFocus];
 
-    // Create an NSImage with a drawing handler that just picks the right composite
-    NSImage* composite = [NSImage imageWithSize:iconSize
-                                        flipped:NO
-                                 drawingHandler:^BOOL(NSRect destRect) {
-      // Get the current appearance
-      NSAppearance* appearance = [NSAppearance currentAppearance];
-      if (!appearance) {
-        appearance = [NSApp effectiveAppearance];
-      }
+    // Create an NSImage with a drawing handler that just picks the right
+    // composite
+    NSImage* composite = [NSImage
+         imageWithSize:iconSize
+               flipped:NO
+        drawingHandler:^BOOL(NSRect destRect) {
+          // Get the current drawing appearance
+          NSAppearance* appearance = [NSAppearance currentDrawingAppearance];
+          if (!appearance) {
+            appearance = [NSApp effectiveAppearance];
+          }
 
-      BOOL isDark = [[appearance name] rangeOfString:@"dark"
-                                             options:NSCaseInsensitiveSearch].location != NSNotFound;
+          BOOL isDark =
+              [[appearance name] rangeOfString:@"dark"
+                                       options:NSCaseInsensitiveSearch]
+                  .location != NSNotFound;
 
-      // Just draw the appropriate pre-composed image - single draw operation!
-      NSImage* finalComposite = isDark ? darkComposite : lightComposite;
-      [finalComposite drawInRect:destRect
-                        fromRect:fullRect
-                       operation:NSCompositingOperationSourceOver
-                        fraction:1.0];
+          // Just draw the appropriate pre-composed image - single draw
+          // operation!
+          NSImage* finalComposite = isDark ? darkComposite : lightComposite;
+          [finalComposite drawInRect:destRect
+                            fromRect:fullRect
+                           operation:NSCompositingOperationSourceOver
+                            fraction:1.0];
 
-      return YES;
-    }];
+          return YES;
+        }];
 
     // Explicitly mark as NOT a template image since we're handling the
     // template behavior manually. This prevents macOS from applying its own
