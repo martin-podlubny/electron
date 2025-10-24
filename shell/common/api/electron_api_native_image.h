@@ -132,10 +132,14 @@ class NativeImage final : public gin_helper::DeprecatedWrappable<NativeImage> {
   void SetTemplateImage(bool setAsTemplate);
   // Determine if the image is a template image.
   bool IsTemplateImage();
-  // Mark the image as a template image that respects colors.
+  // Mark the image as a pseudo-template image that preserves colors.
   // On macOS, this decomposes the image into colored parts (preserved as-is)
-  // and black+alpha parts (rendered as template, adapting to light/dark mode).
-  void SetTemplateImageRespectingColor(bool enable);
+  // and dark parts (rendered as template, adapting to light/dark mode).
+  // This is mutually exclusive with SetTemplateImage - enabling this will
+  // disable standard template behavior.
+  void SetPseudoTemplateImagePreservingColor(bool enable);
+  // Determine if the image is a pseudo-template image preserving colors.
+  bool IsPseudoTemplateImagePreservingColor();
 
 #if BUILDFLAG(IS_WIN)
   base::FilePath hicon_path_;
@@ -148,6 +152,11 @@ class NativeImage final : public gin_helper::DeprecatedWrappable<NativeImage> {
 
   raw_ptr<v8::Isolate> isolate_;
   int64_t memory_usage_ = 0;
+  
+#if BUILDFLAG(IS_MAC)
+  // Track whether this is a pseudo-template image preserving colors
+  bool is_pseudo_template_preserving_color_ = false;
+#endif
 };
 
 }  // namespace electron::api
