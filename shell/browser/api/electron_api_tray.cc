@@ -263,29 +263,13 @@ void Tray::SetImage(v8::Isolate* isolate,
   }
 #endif
 
-  // Standard mode: single image with optional coloredTemplate option
+  // Standard mode: single image
   NativeImage* native_image = nullptr;
   if (!NativeImage::TryConvertNativeImage(isolate, image, &native_image))
     return;
 
 #if BUILDFLAG(IS_WIN)
   tray_icon_->SetImage(native_image->GetHICON(GetSystemMetrics(SM_CXSMICON)));
-#elif BUILDFLAG(IS_MAC)
-  // Check for optional options parameter
-  bool coloredTemplate = false;
-  if (args->Length() >= 2) {
-    gin_helper::Dictionary options;
-    if (args->GetNext(&options)) {
-      options.Get("coloredTemplate", &coloredTemplate);
-    }
-  }
-
-  if (coloredTemplate) {
-    // Apply tray-specific processing - decompose and create adaptive image
-    tray_icon_->SetImage(ApplyTemplateImageWithColor(native_image->image()));
-  } else {
-    tray_icon_->SetImage(native_image->image());
-  }
 #else
   tray_icon_->SetImage(native_image->image());
 #endif
@@ -351,7 +335,7 @@ void Tray::SetPressedImage(v8::Isolate* isolate,
   }
 #endif
 
-  // Standard mode: single image with optional coloredTemplate option
+  // Standard mode: single image
   NativeImage* native_image = nullptr;
   if (!NativeImage::TryConvertNativeImage(isolate, image, &native_image))
     return;
@@ -359,23 +343,6 @@ void Tray::SetPressedImage(v8::Isolate* isolate,
 #if BUILDFLAG(IS_WIN)
   tray_icon_->SetPressedImage(
       native_image->GetHICON(GetSystemMetrics(SM_CXSMICON)));
-#elif BUILDFLAG(IS_MAC)
-  // Check for optional options parameter
-  bool coloredTemplate = false;
-  if (args->Length() >= 2) {
-    gin_helper::Dictionary options;
-    if (args->GetNext(&options)) {
-      options.Get("coloredTemplate", &coloredTemplate);
-    }
-  }
-
-  if (coloredTemplate) {
-    // Apply tray-specific processing - decompose and create adaptive image
-    tray_icon_->SetPressedImage(
-        ApplyTemplateImageWithColor(native_image->image()));
-  } else {
-    tray_icon_->SetPressedImage(native_image->image());
-  }
 #else
   tray_icon_->SetPressedImage(native_image->image());
 #endif

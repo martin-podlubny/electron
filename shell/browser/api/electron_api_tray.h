@@ -36,11 +36,6 @@ namespace electron::api {
 class Menu;
 
 #if BUILDFLAG(IS_MAC)
-// Apply template-with-color processing to an image for use in tray icons.
-// This decomposes the image into colored and template parts, returning
-// a new image that adapts the template parts to light/dark mode.
-gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image);
-
 // Compose multiple layers into a single tray icon.
 // Each layer is a pair of (gfx::Image, bool isTemplate).
 // Template layers adapt to light/dark mode, non-template layers preserve color.
