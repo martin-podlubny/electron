@@ -271,6 +271,70 @@ void Tray::SetPressedImage(v8::Isolate* isolate,
 #endif
 }
 
+void Tray::SetLayeredImage(const gin_helper::Dictionary& options) {
+  if (!CheckAlive())
+    return;
+
+#if BUILDFLAG(IS_MAC)
+  v8::Isolate* isolate = options.isolate();
+  v8::Local<v8::Value> template_value;
+  v8::Local<v8::Value> colored_value;
+
+  if (!options.Get("templateLayer", &template_value) ||
+      !options.Get("coloredLayer", &colored_value)) {
+    return;
+  }
+
+  NativeImage* template_image = nullptr;
+  NativeImage* colored_image = nullptr;
+
+  if (!NativeImage::TryConvertNativeImage(isolate, template_value,
+                                          &template_image) ||
+      !NativeImage::TryConvertNativeImage(isolate, colored_value,
+                                          &colored_image)) {
+    return;
+  }
+
+  gfx::Image composed =
+      ComposeLayeredTrayImage(template_image->image(), colored_image->image());
+  if (!composed.IsEmpty()) {
+    tray_icon_->SetImage(composed);
+  }
+#endif
+}
+
+void Tray::SetLayeredPressedImage(const gin_helper::Dictionary& options) {
+  if (!CheckAlive())
+    return;
+
+#if BUILDFLAG(IS_MAC)
+  v8::Isolate* isolate = options.isolate();
+  v8::Local<v8::Value> template_value;
+  v8::Local<v8::Value> colored_value;
+
+  if (!options.Get("templateLayer", &template_value) ||
+      !options.Get("coloredLayer", &colored_value)) {
+    return;
+  }
+
+  NativeImage* template_image = nullptr;
+  NativeImage* colored_image = nullptr;
+
+  if (!NativeImage::TryConvertNativeImage(isolate, template_value,
+                                          &template_image) ||
+      !NativeImage::TryConvertNativeImage(isolate, colored_value,
+                                          &colored_image)) {
+    return;
+  }
+
+  gfx::Image composed =
+      ComposeLayeredTrayImage(template_image->image(), colored_image->image());
+  if (!composed.IsEmpty()) {
+    tray_icon_->SetPressedImage(composed);
+  }
+#endif
+}
+
 void Tray::SetToolTip(const std::string& tool_tip) {
   if (!CheckAlive())
     return;
@@ -464,6 +528,8 @@ void Tray::FillObjectTemplate(v8::Isolate* isolate,
       .SetMethod("isDestroyed", &Tray::IsDestroyed)
       .SetMethod("setImage", &Tray::SetImage)
       .SetMethod("setPressedImage", &Tray::SetPressedImage)
+      .SetMethod("setLayeredImage", &Tray::SetLayeredImage)
+      .SetMethod("setLayeredPressedImage", &Tray::SetLayeredPressedImage)
       .SetMethod("setToolTip", &Tray::SetToolTip)
       .SetMethod("setTitle", &Tray::SetTitle)
       .SetMethod("getTitle", &Tray::GetTitle)

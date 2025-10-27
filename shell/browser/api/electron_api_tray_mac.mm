@@ -394,4 +394,58 @@ gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image) {
   }
 }
 
+// Public function to compose layered tray image from separate images
+gfx::Image ComposeLayeredTrayImage(const gfx::Image& templateLayer,
+                                   const gfx::Image& coloredLayer) {
+  @autoreleasepool {
+    NSImage* templateImg = templateLayer.AsNSImage();
+    NSImage* coloredImg = coloredLayer.AsNSImage();
+
+    if (!templateImg || !coloredImg)
+      return gfx::Image();
+
+    // Use the larger of the two images' point sizes
+    NSSize templateSize = templateImg.size;
+    NSSize coloredSize = coloredImg.size;
+    NSSize iconSize =
+        NSMakeSize(std::max(templateSize.width, coloredSize.width),
+                   std::max(templateSize.height, coloredSize.height));
+
+    if (iconSize.width <= 0 || iconSize.height <= 0)
+      return gfx::Image();
+
+    const NSRect fullRect = NSMakeRect(0, 0, iconSize.width, iconSize.height);
+
+    // Create tinted versions of the template layer
+    NSImage* lightTemplate =
+        TintTemplate(templateImg, NSColor.blackColor, iconSize);
+    NSImage* darkTemplate =
+        TintTemplate(templateImg, NSColor.whiteColor, iconSize);
+
+    // Pre-compose for both light and dark modes
+    NSImage* lightComposite = Compose(coloredImg, lightTemplate, iconSize);
+    NSImage* darkComposite = Compose(coloredImg, darkTemplate, iconSize);
+
+    // Create adaptive image with drawing handler
+    NSImage* composite = [NSImage
+         imageWithSize:iconSize
+               flipped:NO
+        drawingHandler:^BOOL(NSRect destRect) {
+          NSAppearance* ap = NSAppearance.currentDrawingAppearance
+                                 ?: NSApp.effectiveAppearance;
+          BOOL isDark = [[[ap name] lowercaseString] containsString:@"dark"];
+
+          NSImage* finalImg = isDark ? darkComposite : lightComposite;
+          [finalImg drawInRect:destRect
+                      fromRect:fullRect
+                     operation:NSCompositingOperationSourceOver
+                      fraction:1.0];
+          return YES;
+        }];
+
+    [composite setTemplate:NO];
+    return gfx::Image(composite);
+  }
+}
+
 }  // namespace electron::api
