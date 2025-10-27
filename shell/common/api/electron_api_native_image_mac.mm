@@ -8,7 +8,10 @@
 #include <utility>
 #include <vector>
 
+#import <AppKit/AppKit.h>
 #import <Cocoa/Cocoa.h>
+#import <CoreImage/CoreImage.h>
+#import <Metal/Metal.h>
 #import <QuickLook/QuickLook.h>
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 
@@ -167,122 +170,200 @@ bool NativeImage::IsTemplateImageWithColor() {
   return is_template_with_color_;
 }
 
-// Helper function to decompose an image into colored and template parts.
-// Decompose: near-black pixels (RGB < threshold) -> template (black+alpha);
-// everything else -> colored (preserve original RGB+alpha).
-// Threshold is in [0..1] (e.g. 0.1 for pixels with R,G,B < 10% brightness).
-// Handles various bitmap formats robustly.
+static CIContext* SharedCIContext(void) {
+  static CIContext* ctx;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    static CGColorSpaceRef kLin = NULL;
+    static CGColorSpaceRef kSRGB = NULL;
+    if (!kLin)
+      kLin = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+    if (!kSRGB)
+      kSRGB = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    NSDictionary* opts = @{
+      kCIContextWorkingColorSpace : (__bridge id)kLin,
+      kCIContextOutputColorSpace : (__bridge id)kSRGB,
+      kCIContextUseSoftwareRenderer : dev ? @NO : @YES
+    };
+    ctx = [CIContext contextWithOptions:opts];
+  });
+  return ctx;
+}
+
+// Materialize CIImage to NSImage (no lazy surfaces)
+static NSImage* RenderCI(CIImage* im, CGSize fallbackSize) {
+  if (!im)
+    return nil;
+  CGRect r = im.extent;
+  if (CGRectIsEmpty(r))
+    r = (CGRect){.origin = CGPointZero, .size = fallbackSize};
+  CGImageRef cg = [SharedCIContext() createCGImage:im fromRect:r];
+  if (!cg)
+    return nil;
+  NSImage* ns =
+      [[NSImage alloc] initWithCGImage:cg
+                                  size:NSMakeSize(r.size.width, r.size.height)];
+  CGImageRelease(cg);
+  return ns;
+}
+
+// Build ~binary mask: 1 where gray<thr, else 0 (linear space)
+static CIImage* ThresholdMask(CIImage* gray, CGFloat thr) {
+  const CGFloat gain = 1000.0;
+
+  CIFilter* mat = [CIFilter filterWithName:@"CIColorMatrix"];
+  [mat setValue:gray forKey:kCIInputImageKey];
+  [mat setValue:[CIVector vectorWithX:gain Y:0 Z:0 W:0] forKey:@"inputRVector"];
+  [mat setValue:[CIVector vectorWithX:0 Y:gain Z:0 W:0] forKey:@"inputGVector"];
+  [mat setValue:[CIVector vectorWithX:0 Y:0 Z:gain W:0] forKey:@"inputBVector"];
+  [mat setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1] forKey:@"inputAVector"];
+  [mat setValue:[CIVector vectorWithX:-gain * thr
+                                    Y:-gain * thr
+                                    Z:-gain * thr
+                                    W:0]
+         forKey:@"inputBiasVector"];
+  CIImage* amped = [mat outputImage];
+
+  CIFilter* invert = [CIFilter filterWithName:@"CIColorInvert"];
+  [invert setValue:amped forKey:kCIInputImageKey];
+  CIImage* inv = [invert outputImage];
+
+  CIFilter* clamp = [CIFilter filterWithName:@"CIColorClamp"];
+  [clamp setValue:inv forKey:kCIInputImageKey];
+  [clamp setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+           forKey:@"inputMinComponents"];
+  [clamp setValue:[CIVector vectorWithX:1 Y:1 Z:1 W:1]
+           forKey:@"inputMaxComponents"];
+  return [clamp outputImage];
+}
+
+// Linear BT.709 luma as grayscale (alpha passthrough = 1)
+static CIImage* LinearLuma(CIImage* srcLinear) {
+  CIFilter* mat = [CIFilter filterWithName:@"CIColorMatrix"];
+  [mat setValue:srcLinear forKey:kCIInputImageKey];
+  CIVector* v = [CIVector vectorWithX:0.2126 Y:0.7152 Z:0.0722 W:0];
+  [mat setValue:v forKey:@"inputRVector"];
+  [mat setValue:v forKey:@"inputGVector"];
+  [mat setValue:v forKey:@"inputBVector"];
+  [mat setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1] forKey:@"inputAVector"];
+  return [mat outputImage];
+}
+
+// Alpha channel as grayscale (RGB=alpha, A=1) to gate by alpha>0
+static CIImage* AlphaAsGray(CIImage* srcLinear) {
+  CIFilter* mat = [CIFilter filterWithName:@"CIColorMatrix"];
+  [mat setValue:srcLinear forKey:kCIInputImageKey];
+  [mat setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1] forKey:@"inputRVector"];
+  [mat setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1] forKey:@"inputGVector"];
+  [mat setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1] forKey:@"inputBVector"];
+  [mat setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1] forKey:@"inputAVector"];
+  return [mat outputImage];
+}
+
+// Multiply two grayscale masks using stock compositing
+static CIImage* MulGray(CIImage* a, CIImage* b, CGRect extent) {
+  CIFilter* mul = [CIFilter filterWithName:@"CIMultiplyCompositing"];
+  [mul setValue:a forKey:kCIInputImageKey];
+  [mul setValue:[b imageByCroppingToRect:extent]
+         forKey:kCIInputBackgroundImageKey];
+  return [[mul outputImage] imageByCroppingToRect:extent];
+}
+
+static CIImage* InvertGray(CIImage* m) {
+  CIFilter* inv = [CIFilter filterWithName:@"CIColorInvert"];
+  [inv setValue:m forKey:kCIInputImageKey];
+  return [inv outputImage];
+}
+
+// Drop-in replacement: near-black (by linear luma) & alpha>0 → template
+// (black+alpha); else → colored
 static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source,
                                                     CGFloat threshold) {
   @autoreleasepool {
-    if (!source) {
+    if (!source)
       return {nil, nil};
-    }
 
-    NSSize imageSize = [source size];
-    NSInteger width = static_cast<NSInteger>(imageSize.width);
-    NSInteger height = static_cast<NSInteger>(imageSize.height);
-
-    if (width <= 0 || height <= 0) {
+    CGImageRef cg = [source CGImageForProposedRect:NULL context:nil hints:nil];
+    if (!cg)
       return {nil, nil};
-    }
 
-    // Create output bitmaps in a known format (RGBA, 8-bit per channel)
-    NSBitmapImageRep* coloredBitmap = [[NSBitmapImageRep alloc]
-        initWithBitmapDataPlanes:nil
-                      pixelsWide:width
-                      pixelsHigh:height
-                   bitsPerSample:8
-                 samplesPerPixel:4
-                        hasAlpha:YES
-                        isPlanar:NO
-                  colorSpaceName:NSCalibratedRGBColorSpace
-                     bytesPerRow:0  // Let system determine
-                    bitsPerPixel:32];
-
-    NSBitmapImageRep* templateBitmap = [[NSBitmapImageRep alloc]
-        initWithBitmapDataPlanes:nil
-                      pixelsWide:width
-                      pixelsHigh:height
-                   bitsPerSample:8
-                 samplesPerPixel:4
-                        hasAlpha:YES
-                        isPlanar:NO
-                  colorSpaceName:NSCalibratedRGBColorSpace
-                     bytesPerRow:0  // Let system determine
-                    bitsPerPixel:32];
-
-    if (!coloredBitmap || !templateBitmap) {
+    const size_t w = CGImageGetWidth(cg);
+    const size_t h = CGImageGetHeight(cg);
+    if (w == 0 || h == 0)
       return {nil, nil};
-    }
 
-    // Draw source image into a graphics context to normalize the format
-    NSGraphicsContext* coloredContext =
-        [NSGraphicsContext graphicsContextWithBitmapImageRep:coloredBitmap];
-    if (!coloredContext) {
-      return {nil, nil};
-    }
+    const CGSize sz = CGSizeMake((CGFloat)w, (CGFloat)h);
+    const CGRect extent = CGRectMake(0, 0, (CGFloat)w, (CGFloat)h);
+    // Known input CS, then linearize for decisions
+    CIImage* ci = [[CIImage alloc]
+        initWithCGImage:cg
+                options:@{
+                  kCIImageColorSpace :
+                      (__bridge id)CGColorSpaceCreateWithName(kCGColorSpaceSRGB)
+                }];
+    CIImage* linear = [ci imageByApplyingFilter:@"CISRGBToneCurveToLinear"];
 
-    [NSGraphicsContext saveGraphicsState];
-    [NSGraphicsContext setCurrentContext:coloredContext];
+    // near-black mask (1 where luma < threshold)
+    CIImage* luma = LinearLuma(linear);
+    CIImage* maskL = ThresholdMask(luma, threshold);
 
-    // Draw the source image
-    [source drawInRect:NSMakeRect(0, 0, width, height)
-              fromRect:NSZeroRect
-             operation:NSCompositingOperationCopy
-              fraction:1.0];
+    // alpha>0 mask
+    // ThresholdMask returns 1 where value < threshold, so it gives us alpha <
+    // epsilon We want the inverse: 1 where alpha >= epsilon (has alpha)
+    CIImage* alphaG = AlphaAsGray(linear);
+    CIImage* maskNoAlpha = ThresholdMask(alphaG, 1.0 / 255.0);
+    CIImage* maskA = InvertGray(maskNoAlpha);  // Now 1 where alpha > 0
 
-    [NSGraphicsContext restoreGraphicsState];
+    // final mask = near-black AND alpha>0
+    CIImage* finalMask = MulGray(maskL, maskA, extent);
 
-    // Now coloredBitmap contains the source in RGBA format
-    // Process each pixel using safe NSBitmapImageRep methods
-    const NSUInteger thresholdByte = static_cast<NSUInteger>(threshold * 255.0);
+    // template: source masked to only black pixels, then convert RGB to black
+    // First, extract only the pixels where mask=1
+    CIFilter* clearGen = [CIFilter filterWithName:@"CIConstantColorGenerator"];
+    [clearGen setValue:[CIColor colorWithRed:0 green:0 blue:0 alpha:0]
+                forKey:@"inputColor"];
+    CIImage* clear = [[clearGen outputImage] imageByCroppingToRect:extent];
 
-    NSUInteger clearPixel[4] = {0, 0, 0, 0};
+    CIFilter* templMask = [CIFilter filterWithName:@"CIBlendWithMask"];
+    [templMask setValue:linear forKey:kCIInputImageKey];
+    [templMask setValue:clear forKey:kCIInputBackgroundImageKey];
+    [templMask setValue:finalMask forKey:kCIInputMaskImageKey];
+    CIImage* templMasked = [templMask outputImage];
 
-    for (NSInteger y = 0; y < height; y++) {
-      for (NSInteger x = 0; x < width; x++) {
-        // Get pixel using safe method
-        NSUInteger pixel[4] = {0, 0, 0, 0};
-        [coloredBitmap getPixel:pixel atX:x y:y];
+    // Now convert RGB to black (0,0,0) while keeping alpha
+    CIFilter* toBlack = [CIFilter filterWithName:@"CIColorMatrix"];
+    [toBlack setValue:templMasked forKey:kCIInputImageKey];
+    [toBlack setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+               forKey:@"inputRVector"];
+    [toBlack setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+               forKey:@"inputGVector"];
+    [toBlack setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:0]
+               forKey:@"inputBVector"];
+    [toBlack setValue:[CIVector vectorWithX:0 Y:0 Z:0 W:1]
+               forKey:@"inputAVector"];
+    CIImage* templLinear = [[toBlack outputImage] imageByCroppingToRect:extent];
 
-        NSUInteger r = pixel[0];
-        NSUInteger g = pixel[1];
-        NSUInteger b = pixel[2];
-        NSUInteger a = pixel[3];
+    // colored: source where NOT masked
+    CIImage* invMask = InvertGray(finalMask);
+    CIFilter* colorBlend = [CIFilter filterWithName:@"CIBlendWithMask"];
+    [colorBlend setValue:linear forKey:kCIInputImageKey];
+    [colorBlend setValue:[CIImage imageWithColor:[CIColor colorWithRed:0
+                                                                 green:0
+                                                                  blue:0
+                                                                 alpha:0]]
+                  forKey:kCIInputBackgroundImageKey];
+    [colorBlend setValue:invMask forKey:kCIInputMaskImageKey];
+    CIImage* coloredLinear =
+        [[colorBlend outputImage] imageByCroppingToRect:extent];
 
-        // Check if this is a near-black pixel
-        BOOL isBlack =
-            (r < thresholdByte && g < thresholdByte && b < thresholdByte);
-        BOOL hasAlpha = (a > 0);
+    // back to sRGB and render
+    CIImage* templOut =
+        [templLinear imageByApplyingFilter:@"CILinearToSRGBToneCurve"];
+    CIImage* coloredOut =
+        [coloredLinear imageByApplyingFilter:@"CILinearToSRGBToneCurve"];
 
-        if (isBlack && hasAlpha) {
-          // Near-black pixel -> goes to template, clear from colored
-          NSUInteger templatePixel[4] = {0, 0, 0, a};
-          [templateBitmap setPixel:templatePixel atX:x y:y];
-          [coloredBitmap setPixel:clearPixel atX:x y:y];
-        } else if (hasAlpha) {
-          // Colored pixel -> stays in coloredBitmap, clear from template
-          [templateBitmap setPixel:clearPixel atX:x y:y];
-          // coloredBitmap already has the correct pixel
-        } else {
-          // Fully transparent -> clear both
-          [coloredBitmap setPixel:clearPixel atX:x y:y];
-          [templateBitmap setPixel:clearPixel atX:x y:y];
-        }
-      }
-    }
-
-    // Create NSImages from the bitmaps
-    NSImage* coloredImage =
-        [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
-    [coloredImage addRepresentation:coloredBitmap];
-
-    NSImage* templateImage =
-        [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
-    [templateImage addRepresentation:templateBitmap];
-
-    return {coloredImage, templateImage};
+    return {RenderCI(coloredOut, sz), RenderCI(templOut, sz)};
   }
 }
 
