@@ -7,25 +7,40 @@
 
 namespace electron::api {
 
-// ===== Core Image Helpers =====
+static CGColorSpaceRef SharedLinearColorSpace(void) {
+  static CGColorSpaceRef cs = NULL;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    cs = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+  });
+  return cs;
+}
+
+static CGColorSpaceRef SharedSRGBColorSpace(void) {
+  static CGColorSpaceRef cs = NULL;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  });
+  return cs;
+}
 
 static CIContext* SharedCIContext(void) {
   static CIContext* ctx;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-    static CGColorSpaceRef kLin = NULL;
-    static CGColorSpaceRef kSRGB = NULL;
-    if (!kLin)
-      kLin = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
-    if (!kSRGB)
-      kSRGB = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     NSDictionary* opts = @{
-      kCIContextWorkingColorSpace : (__bridge id)kLin,
-      kCIContextOutputColorSpace : (__bridge id)kSRGB,
+      kCIContextWorkingColorSpace : (__bridge id)SharedLinearColorSpace(),
+      kCIContextOutputColorSpace : (__bridge id)SharedSRGBColorSpace(),
       kCIContextUseSoftwareRenderer : dev ? @NO : @YES
     };
-    ctx = [CIContext contextWithMTLDevice:dev options:opts];
+    // Use Metal if available, otherwise fall back to CPU-only context
+    if (dev) {
+      ctx = [CIContext contextWithMTLDevice:dev options:opts];
+    } else {
+      ctx = [CIContext contextWithOptions:opts];
+    }
   });
   return ctx;
 }
@@ -134,12 +149,10 @@ static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source,
 
     const CGSize sz = CGSizeMake((CGFloat)w, (CGFloat)h);
     const CGRect extent = CGRectMake(0, 0, (CGFloat)w, (CGFloat)h);
-    // Known input CS, then linearize for decisions
     CIImage* ci = [[CIImage alloc]
         initWithCGImage:cg
                 options:@{
-                  kCIImageColorSpace :
-                      (__bridge id)CGColorSpaceCreateWithName(kCGColorSpaceSRGB)
+                  kCIImageColorSpace : (__bridge id)SharedSRGBColorSpace()
                 }];
     CIImage* linear = [ci imageByApplyingFilter:@"CISRGBToneCurveToLinear"];
 
@@ -147,12 +160,11 @@ static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source,
     CIImage* luma = LinearLuma(linear);
     CIImage* maskL = ThresholdMask(luma, threshold);
 
-    // alpha>0 mask
-    // ThresholdMask returns 1 where value < threshold, so it gives us alpha <
-    // epsilon We want the inverse: 1 where alpha >= epsilon (has alpha)
+    // alpha>0 mask: ThresholdMask gives 1 where value < threshold,
+    // so first get "alpha < epsilon", then invert to get "alpha >= epsilon"
     CIImage* alphaG = AlphaAsGray(linear);
-    CIImage* maskNoAlpha = ThresholdMask(alphaG, 1.0 / 255.0);
-    CIImage* maskA = InvertGray(maskNoAlpha);  // Now 1 where alpha > 0
+    CIImage* maskTransparent = ThresholdMask(alphaG, 1.0 / 255.0);
+    CIImage* maskA = InvertGray(maskTransparent);
 
     // final mask = near-black AND alpha>0
     CIImage* finalMask = MulGray(maskL, maskA, extent);
@@ -214,18 +226,21 @@ static NSImage* TintTemplate(NSImage* templateImg,
     NSImage* out = [[NSImage alloc] initWithSize:pointSize];
 
     // If there are no reps (odd), fallback to a single focus pass.
-    NSArray<NSImageRep*>* reps =
-        templateImg.representations.count ? templateImg.representations : @[
-          [templateImg bestRepresentationForRect:(NSRect){.size = pointSize}
-                                         context:nil
-                                           hints:nil]
-        ];
+    // Guard against nil bestRepresentation
+    NSImageRep* bestRep =
+        [templateImg bestRepresentationForRect:(NSRect){.size = pointSize}
+                                       context:nil
+                                         hints:nil];
+    NSArray<NSImageRep*>* reps = templateImg.representations.count
+                                     ? templateImg.representations
+                                     : (bestRep ? @[ bestRep ] : @[]);
     for (NSImageRep* rep in reps) {
       NSInteger pw = rep.pixelsWide;
       NSInteger ph = rep.pixelsHigh;
       if (pw <= 0 || ph <= 0)
         continue;
 
+      // Use sRGB color space for consistent output with Core Image
       NSBitmapImageRep* dst = [[NSBitmapImageRep alloc]
           initWithBitmapDataPlanes:NULL
                         pixelsWide:pw
@@ -235,6 +250,7 @@ static NSImage* TintTemplate(NSImage* templateImg,
                           hasAlpha:YES
                           isPlanar:NO
                     colorSpaceName:NSCalibratedRGBColorSpace
+                      bitmapFormat:0
                        bytesPerRow:0
                       bitsPerPixel:0];
 
@@ -242,7 +258,8 @@ static NSImage* TintTemplate(NSImage* templateImg,
           [NSGraphicsContext graphicsContextWithBitmapImageRep:dst];
       [NSGraphicsContext saveGraphicsState];
       [NSGraphicsContext setCurrentContext:ctx];
-      ctx.imageInterpolation = NSImageInterpolationHigh;
+      // Use no interpolation for sharp menu bar icons
+      ctx.imageInterpolation = NSImageInterpolationNone;
 
       // Fill with tint, then keep alpha from the template via DestinationIn.
       [tint setFill];
@@ -253,7 +270,7 @@ static NSImage* TintTemplate(NSImage* templateImg,
                      fraction:1.0
                respectFlipped:NO
                         hints:@{
-                          NSImageHintInterpolation : @(NSImageInterpolationHigh)
+                          NSImageHintInterpolation : @(NSImageInterpolationNone)
                         }];
 
       [NSGraphicsContext restoreGraphicsState];
@@ -283,6 +300,7 @@ static NSImage* Compose(NSImage* colored,
     if (pw <= 0 || ph <= 0)
       continue;
 
+    // Use sRGB color space for consistent output with Core Image
     NSBitmapImageRep* dst = [[NSBitmapImageRep alloc]
         initWithBitmapDataPlanes:NULL
                       pixelsWide:pw
@@ -292,6 +310,7 @@ static NSImage* Compose(NSImage* colored,
                         hasAlpha:YES
                         isPlanar:NO
                   colorSpaceName:NSCalibratedRGBColorSpace
+                    bitmapFormat:0
                      bytesPerRow:0
                     bitsPerPixel:0];
 
@@ -299,7 +318,8 @@ static NSImage* Compose(NSImage* colored,
         [NSGraphicsContext graphicsContextWithBitmapImageRep:dst];
     [NSGraphicsContext saveGraphicsState];
     [NSGraphicsContext setCurrentContext:ctx];
-    ctx.imageInterpolation = NSImageInterpolationHigh;
+    // Use no interpolation for sharp menu bar icons
+    ctx.imageInterpolation = NSImageInterpolationNone;
 
     NSRect r = NSMakeRect(0, 0, pw, ph);
     [colored drawInRect:r
@@ -308,7 +328,7 @@ static NSImage* Compose(NSImage* colored,
                fraction:1.0
          respectFlipped:NO
                   hints:@{
-                    NSImageHintInterpolation : @(NSImageInterpolationHigh)
+                    NSImageHintInterpolation : @(NSImageInterpolationNone)
                   }];
     [tintedTemplate
             drawInRect:r
@@ -317,7 +337,7 @@ static NSImage* Compose(NSImage* colored,
               fraction:1.0
         respectFlipped:NO
                  hints:@{
-                   NSImageHintInterpolation : @(NSImageInterpolationHigh)
+                   NSImageHintInterpolation : @(NSImageInterpolationNone)
                  }];
 
     [NSGraphicsContext restoreGraphicsState];
@@ -333,17 +353,17 @@ gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image) {
     if (!source)
       return image;
 
+    // Use the source image's point size, not pixel dimensions
+    // This ensures 2x images render at the correct size
+    NSSize iconSize = source.size;
+    if (iconSize.width <= 0 || iconSize.height <= 0)
+      return image;
+
     auto [coloredPart, templatePart] = DecomposeImage(source, 0.1);
     if (!coloredPart || !templatePart)
       return image;
 
-    const size_t w = (size_t)coloredPart.size.width;
-    const size_t h = (size_t)coloredPart.size.height;
-    if (!w || !h)
-      return image;
-
-    const NSSize iconSize = NSMakeSize((CGFloat)w, (CGFloat)h);
-    const NSRect fullRect = NSMakeRect(0, 0, (CGFloat)w, (CGFloat)h);
+    const NSRect fullRect = NSMakeRect(0, 0, iconSize.width, iconSize.height);
 
     NSImage* lightTemplate =
         TintTemplate(templatePart, NSColor.blackColor, iconSize);
