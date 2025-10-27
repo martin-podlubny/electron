@@ -54,7 +54,15 @@ Tray::Tray(v8::Isolate* isolate,
            v8::Local<v8::Value> image,
            std::optional<base::Uuid> guid)
     : guid_(guid), tray_icon_(TrayIcon::Create(guid)) {
-  SetImage(isolate, image);
+  // Note: Constructor doesn't support options - use setImage() for that
+  NativeImage* native_image = nullptr;
+  if (NativeImage::TryConvertNativeImage(isolate, image, &native_image)) {
+#if BUILDFLAG(IS_WIN)
+    tray_icon_->SetImage(native_image->GetHICON(GetSystemMetrics(SM_CXSMICON)));
+#else
+    tray_icon_->SetImage(native_image->image());
+#endif
+  }
   tray_icon_->AddObserver(this);
   if (guid.has_value())
     tray_icon_->SetAutoSaveName(guid.value().AsLowercaseString());
@@ -195,7 +203,9 @@ bool Tray::IsDestroyed() {
   return !tray_icon_;
 }
 
-void Tray::SetImage(v8::Isolate* isolate, v8::Local<v8::Value> image) {
+void Tray::SetImage(v8::Isolate* isolate,
+                    v8::Local<v8::Value> image,
+                    gin::Arguments* args) {
   if (!CheckAlive())
     return;
 
@@ -205,12 +215,30 @@ void Tray::SetImage(v8::Isolate* isolate, v8::Local<v8::Value> image) {
 
 #if BUILDFLAG(IS_WIN)
   tray_icon_->SetImage(native_image->GetHICON(GetSystemMetrics(SM_CXSMICON)));
+#elif BUILDFLAG(IS_MAC)
+  // Check for optional options parameter
+  bool coloredTemplate = false;
+  if (args->Length() >= 2) {
+    gin_helper::Dictionary options;
+    if (args->GetNext(&options)) {
+      options.Get("coloredTemplate", &coloredTemplate);
+    }
+  }
+
+  if (coloredTemplate) {
+    // Apply tray-specific processing - decompose and create adaptive image
+    tray_icon_->SetImage(ApplyTemplateImageWithColor(native_image->image()));
+  } else {
+    tray_icon_->SetImage(native_image->image());
+  }
 #else
   tray_icon_->SetImage(native_image->image());
 #endif
 }
 
-void Tray::SetPressedImage(v8::Isolate* isolate, v8::Local<v8::Value> image) {
+void Tray::SetPressedImage(v8::Isolate* isolate,
+                           v8::Local<v8::Value> image,
+                           gin::Arguments* args) {
   if (!CheckAlive())
     return;
 
@@ -221,6 +249,23 @@ void Tray::SetPressedImage(v8::Isolate* isolate, v8::Local<v8::Value> image) {
 #if BUILDFLAG(IS_WIN)
   tray_icon_->SetPressedImage(
       native_image->GetHICON(GetSystemMetrics(SM_CXSMICON)));
+#elif BUILDFLAG(IS_MAC)
+  // Check for optional options parameter
+  bool coloredTemplate = false;
+  if (args->Length() >= 2) {
+    gin_helper::Dictionary options;
+    if (args->GetNext(&options)) {
+      options.Get("coloredTemplate", &coloredTemplate);
+    }
+  }
+
+  if (coloredTemplate) {
+    // Apply tray-specific processing - decompose and create adaptive image
+    tray_icon_->SetPressedImage(
+        ApplyTemplateImageWithColor(native_image->image()));
+  } else {
+    tray_icon_->SetPressedImage(native_image->image());
+  }
 #else
   tray_icon_->SetPressedImage(native_image->image());
 #endif
