@@ -171,121 +171,107 @@ bool NativeImage::IsTemplateImageWithColor() {
 // Decompose: near-black pixels (RGB < threshold) -> template (black+alpha);
 // everything else -> colored (preserve original RGB+alpha).
 // Threshold is in [0..1] (e.g. 0.1 for pixels with R,G,B < 10% brightness).
+// Handles various bitmap formats robustly.
 static std::pair<NSImage*, NSImage*> DecomposeImage(NSImage* source,
                                                     CGFloat threshold) {
   @autoreleasepool {
-    // Get TIFF representation and create bitmap
-    NSData* tiffData = [source TIFFRepresentation];
-    if (!tiffData) {
+    if (!source) {
       return {nil, nil};
     }
 
-    NSBitmapImageRep* bitmap = [NSBitmapImageRep imageRepWithData:tiffData];
-    if (!bitmap) {
+    NSSize imageSize = [source size];
+    NSInteger width = static_cast<NSInteger>(imageSize.width);
+    NSInteger height = static_cast<NSInteger>(imageSize.height);
+
+    if (width <= 0 || height <= 0) {
       return {nil, nil};
     }
 
-    NSInteger width = [bitmap pixelsWide];
-    NSInteger height = [bitmap pixelsHigh];
+    // Create output bitmaps in a known format (RGBA, 8-bit per channel)
+    NSBitmapImageRep* coloredBitmap = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:nil
+                      pixelsWide:width
+                      pixelsHigh:height
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSCalibratedRGBColorSpace
+                     bytesPerRow:0  // Let system determine
+                    bitsPerPixel:32];
 
-    // Create two new bitmap reps for the decomposed parts
-    NSBitmapImageRep* coloredBitmap =
-        [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nil
-                                                pixelsWide:width
-                                                pixelsHigh:height
-                                             bitsPerSample:8
-                                           samplesPerPixel:4
-                                                  hasAlpha:YES
-                                                  isPlanar:NO
-                                            colorSpaceName:NSDeviceRGBColorSpace
-                                               bytesPerRow:width * 4
-                                              bitsPerPixel:32];
-
-    NSBitmapImageRep* templateBitmap =
-        [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nil
-                                                pixelsWide:width
-                                                pixelsHigh:height
-                                             bitsPerSample:8
-                                           samplesPerPixel:4
-                                                  hasAlpha:YES
-                                                  isPlanar:NO
-                                            colorSpaceName:NSDeviceRGBColorSpace
-                                               bytesPerRow:width * 4
-                                              bitsPerPixel:32];
+    NSBitmapImageRep* templateBitmap = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:nil
+                      pixelsWide:width
+                      pixelsHigh:height
+                   bitsPerSample:8
+                 samplesPerPixel:4
+                        hasAlpha:YES
+                        isPlanar:NO
+                  colorSpaceName:NSCalibratedRGBColorSpace
+                     bytesPerRow:0  // Let system determine
+                    bitsPerPixel:32];
 
     if (!coloredBitmap || !templateBitmap) {
       return {nil, nil};
     }
 
-    // Get raw bitmap data pointers
-    unsigned char* bitmapData = [bitmap bitmapData];
-    unsigned char* coloredData = [coloredBitmap bitmapData];
-    unsigned char* templateData = [templateBitmap bitmapData];
-
-    if (!bitmapData || !coloredData || !templateData) {
+    // Draw source image into a graphics context to normalize the format
+    NSGraphicsContext* coloredContext =
+        [NSGraphicsContext graphicsContextWithBitmapImageRep:coloredBitmap];
+    if (!coloredContext) {
       return {nil, nil};
     }
 
-    NSInteger bytesPerRow = [bitmap bytesPerRow];
-    NSInteger samplesPerPixel = [bitmap samplesPerPixel];
+    [NSGraphicsContext saveGraphicsState];
+    [NSGraphicsContext setCurrentContext:coloredContext];
 
-// Suppress unsafe buffer warnings for direct bitmap manipulation
-// This is intentional for performance-critical pixel processing
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+    // Draw the source image
+    [source drawInRect:NSMakeRect(0, 0, width, height)
+              fromRect:NSZeroRect
+             operation:NSCompositingOperationCopy
+              fraction:1.0];
 
-    // Process each pixel
+    [NSGraphicsContext restoreGraphicsState];
+
+    // Now coloredBitmap contains the source in RGBA format
+    // Process each pixel using safe NSBitmapImageRep methods
+    const NSUInteger thresholdByte = static_cast<NSUInteger>(threshold * 255.0);
+
+    NSUInteger clearPixel[4] = {0, 0, 0, 0};
+
     for (NSInteger y = 0; y < height; y++) {
       for (NSInteger x = 0; x < width; x++) {
-        NSInteger pixelOffset = y * bytesPerRow + x * samplesPerPixel;
+        // Get pixel using safe method
+        NSUInteger pixel[4] = {0, 0, 0, 0};
+        [coloredBitmap getPixel:pixel atX:x y:y];
 
-        CGFloat r = bitmapData[pixelOffset] / 255.0;
-        CGFloat g = bitmapData[pixelOffset + 1] / 255.0;
-        CGFloat b = bitmapData[pixelOffset + 2] / 255.0;
-        CGFloat a =
-            samplesPerPixel >= 4 ? bitmapData[pixelOffset + 3] / 255.0 : 1.0;
+        NSUInteger r = pixel[0];
+        NSUInteger g = pixel[1];
+        NSUInteger b = pixel[2];
+        NSUInteger a = pixel[3];
 
-        // Check if this is a black pixel - threshold for near-black
-        bool isBlack = r < threshold && g < threshold && b < threshold;
+        // Check if this is a near-black pixel
+        BOOL isBlack =
+            (r < thresholdByte && g < thresholdByte && b < thresholdByte);
+        BOOL hasAlpha = (a > 0);
 
-        if (isBlack && a > 0) {
-          // This is a black+alpha pixel - goes to template part
-          templateData[pixelOffset] = 0;
-          templateData[pixelOffset + 1] = 0;
-          templateData[pixelOffset + 2] = 0;
-          templateData[pixelOffset + 3] = (unsigned char)(a * 255.0);
-
-          coloredData[pixelOffset] = 0;
-          coloredData[pixelOffset + 1] = 0;
-          coloredData[pixelOffset + 2] = 0;
-          coloredData[pixelOffset + 3] = 0;
-        } else if (a > 0) {
-          // This is a colored pixel - goes to colored part
-          coloredData[pixelOffset] = (unsigned char)(r * 255.0);
-          coloredData[pixelOffset + 1] = (unsigned char)(g * 255.0);
-          coloredData[pixelOffset + 2] = (unsigned char)(b * 255.0);
-          coloredData[pixelOffset + 3] = (unsigned char)(a * 255.0);
-
-          templateData[pixelOffset] = 0;
-          templateData[pixelOffset + 1] = 0;
-          templateData[pixelOffset + 2] = 0;
-          templateData[pixelOffset + 3] = 0;
+        if (isBlack && hasAlpha) {
+          // Near-black pixel -> goes to template, clear from colored
+          NSUInteger templatePixel[4] = {0, 0, 0, a};
+          [templateBitmap setPixel:templatePixel atX:x y:y];
+          [coloredBitmap setPixel:clearPixel atX:x y:y];
+        } else if (hasAlpha) {
+          // Colored pixel -> stays in coloredBitmap, clear from template
+          [templateBitmap setPixel:clearPixel atX:x y:y];
+          // coloredBitmap already has the correct pixel
         } else {
-          // Transparent pixel
-          coloredData[pixelOffset] = 0;
-          coloredData[pixelOffset + 1] = 0;
-          coloredData[pixelOffset + 2] = 0;
-          coloredData[pixelOffset + 3] = 0;
-
-          templateData[pixelOffset] = 0;
-          templateData[pixelOffset + 1] = 0;
-          templateData[pixelOffset + 2] = 0;
-          templateData[pixelOffset + 3] = 0;
+          // Fully transparent -> clear both
+          [coloredBitmap setPixel:clearPixel atX:x y:y];
+          [templateBitmap setPixel:clearPixel atX:x y:y];
         }
       }
     }
-
-#pragma clang diagnostic pop
 
     // Create NSImages from the bitmaps
     NSImage* coloredImage =
