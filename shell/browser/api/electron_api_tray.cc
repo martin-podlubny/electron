@@ -209,6 +209,42 @@ void Tray::SetImage(v8::Isolate* isolate,
   if (!CheckAlive())
     return;
 
+#if BUILDFLAG(IS_MAC)
+  // Check if first argument is an options object with layers
+  if (image->IsObject() && !image->IsNull()) {
+    gin_helper::Dictionary options(isolate, image.As<v8::Object>());
+    v8::Local<v8::Value> layers_value;
+    if (options.Get("layers", &layers_value) && layers_value->IsArray()) {
+      // Multi-layer mode
+      v8::Local<v8::Array> layers_array = layers_value.As<v8::Array>();
+      std::vector<std::pair<gfx::Image, bool>> layers;
+
+      for (uint32_t i = 0; i < layers_array->Length(); i++) {
+        v8::Local<v8::Value> layer_value;
+        if (!layers_array->Get(isolate->GetCurrentContext(), i)
+                 .ToLocal(&layer_value)) {
+          continue;
+        }
+
+        NativeImage* layer_image = nullptr;
+        if (!NativeImage::TryConvertNativeImage(isolate, layer_value,
+                                                &layer_image)) {
+          continue;
+        }
+
+        bool is_template = layer_image->IsTemplateImage();
+        layers.push_back({layer_image->image(), is_template});
+      }
+
+      if (!layers.empty()) {
+        tray_icon_->SetImage(ComposeMultiLayerTrayImage(layers));
+        return;
+      }
+    }
+  }
+#endif
+
+  // Standard mode: single image with optional coloredTemplate option
   NativeImage* native_image = nullptr;
   if (!NativeImage::TryConvertNativeImage(isolate, image, &native_image))
     return;
@@ -242,6 +278,42 @@ void Tray::SetPressedImage(v8::Isolate* isolate,
   if (!CheckAlive())
     return;
 
+#if BUILDFLAG(IS_MAC)
+  // Check if first argument is an options object with layers
+  if (image->IsObject() && !image->IsNull()) {
+    gin_helper::Dictionary options(isolate, image.As<v8::Object>());
+    v8::Local<v8::Value> layers_value;
+    if (options.Get("layers", &layers_value) && layers_value->IsArray()) {
+      // Multi-layer mode
+      v8::Local<v8::Array> layers_array = layers_value.As<v8::Array>();
+      std::vector<std::pair<gfx::Image, bool>> layers;
+
+      for (uint32_t i = 0; i < layers_array->Length(); i++) {
+        v8::Local<v8::Value> layer_value;
+        if (!layers_array->Get(isolate->GetCurrentContext(), i)
+                 .ToLocal(&layer_value)) {
+          continue;
+        }
+
+        NativeImage* layer_image = nullptr;
+        if (!NativeImage::TryConvertNativeImage(isolate, layer_value,
+                                                &layer_image)) {
+          continue;
+        }
+
+        bool is_template = layer_image->IsTemplateImage();
+        layers.push_back({layer_image->image(), is_template});
+      }
+
+      if (!layers.empty()) {
+        tray_icon_->SetPressedImage(ComposeMultiLayerTrayImage(layers));
+        return;
+      }
+    }
+  }
+#endif
+
+  // Standard mode: single image with optional coloredTemplate option
   NativeImage* native_image = nullptr;
   if (!NativeImage::TryConvertNativeImage(isolate, image, &native_image))
     return;
@@ -268,70 +340,6 @@ void Tray::SetPressedImage(v8::Isolate* isolate,
   }
 #else
   tray_icon_->SetPressedImage(native_image->image());
-#endif
-}
-
-void Tray::SetLayeredImage(const gin_helper::Dictionary& options) {
-  if (!CheckAlive())
-    return;
-
-#if BUILDFLAG(IS_MAC)
-  v8::Isolate* isolate = options.isolate();
-  v8::Local<v8::Value> template_value;
-  v8::Local<v8::Value> colored_value;
-
-  if (!options.Get("templateLayer", &template_value) ||
-      !options.Get("coloredLayer", &colored_value)) {
-    return;
-  }
-
-  NativeImage* template_image = nullptr;
-  NativeImage* colored_image = nullptr;
-
-  if (!NativeImage::TryConvertNativeImage(isolate, template_value,
-                                          &template_image) ||
-      !NativeImage::TryConvertNativeImage(isolate, colored_value,
-                                          &colored_image)) {
-    return;
-  }
-
-  gfx::Image composed =
-      ComposeLayeredTrayImage(template_image->image(), colored_image->image());
-  if (!composed.IsEmpty()) {
-    tray_icon_->SetImage(composed);
-  }
-#endif
-}
-
-void Tray::SetLayeredPressedImage(const gin_helper::Dictionary& options) {
-  if (!CheckAlive())
-    return;
-
-#if BUILDFLAG(IS_MAC)
-  v8::Isolate* isolate = options.isolate();
-  v8::Local<v8::Value> template_value;
-  v8::Local<v8::Value> colored_value;
-
-  if (!options.Get("templateLayer", &template_value) ||
-      !options.Get("coloredLayer", &colored_value)) {
-    return;
-  }
-
-  NativeImage* template_image = nullptr;
-  NativeImage* colored_image = nullptr;
-
-  if (!NativeImage::TryConvertNativeImage(isolate, template_value,
-                                          &template_image) ||
-      !NativeImage::TryConvertNativeImage(isolate, colored_value,
-                                          &colored_image)) {
-    return;
-  }
-
-  gfx::Image composed =
-      ComposeLayeredTrayImage(template_image->image(), colored_image->image());
-  if (!composed.IsEmpty()) {
-    tray_icon_->SetPressedImage(composed);
-  }
 #endif
 }
 
@@ -528,8 +536,6 @@ void Tray::FillObjectTemplate(v8::Isolate* isolate,
       .SetMethod("isDestroyed", &Tray::IsDestroyed)
       .SetMethod("setImage", &Tray::SetImage)
       .SetMethod("setPressedImage", &Tray::SetPressedImage)
-      .SetMethod("setLayeredImage", &Tray::SetLayeredImage)
-      .SetMethod("setLayeredPressedImage", &Tray::SetLayeredPressedImage)
       .SetMethod("setToolTip", &Tray::SetToolTip)
       .SetMethod("setTitle", &Tray::SetTitle)
       .SetMethod("getTitle", &Tray::GetTitle)

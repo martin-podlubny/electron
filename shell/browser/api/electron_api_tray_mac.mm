@@ -370,8 +370,9 @@ gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image) {
     NSImage* darkTemplate =
         TintTemplate(templatePart, NSColor.whiteColor, iconSize);
 
-    NSImage* lightComposite = Compose(coloredPart, lightTemplate, iconSize);
-    NSImage* darkComposite = Compose(coloredPart, darkTemplate, iconSize);
+    // Template goes on bottom, colored on top (so alpha shows through)
+    NSImage* lightComposite = Compose(lightTemplate, coloredPart, iconSize);
+    NSImage* darkComposite = Compose(darkTemplate, coloredPart, iconSize);
 
     NSImage* composite = [NSImage
          imageWithSize:iconSize
@@ -395,36 +396,85 @@ gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image) {
 }
 
 // Public function to compose layered tray image from separate images
-gfx::Image ComposeLayeredTrayImage(const gfx::Image& templateLayer,
-                                   const gfx::Image& coloredLayer) {
+gfx::Image ComposeMultiLayerTrayImage(
+    const std::vector<std::pair<gfx::Image, bool>>& layers) {
   @autoreleasepool {
-    NSImage* templateImg = templateLayer.AsNSImage();
-    NSImage* coloredImg = coloredLayer.AsNSImage();
-
-    if (!templateImg || !coloredImg)
+    if (layers.empty())
       return gfx::Image();
 
-    // Use the larger of the two images' point sizes
-    NSSize templateSize = templateImg.size;
-    NSSize coloredSize = coloredImg.size;
-    NSSize iconSize =
-        NSMakeSize(std::max(templateSize.width, coloredSize.width),
-                   std::max(templateSize.height, coloredSize.height));
+    // Determine the maximum size across all layers
+    NSSize iconSize = NSZeroSize;
+    for (const auto& [img, isTemplate] : layers) {
+      NSImage* nsImg = img.AsNSImage();
+      if (nsImg) {
+        if (nsImg.size.width > iconSize.width)
+          iconSize.width = nsImg.size.width;
+        if (nsImg.size.height > iconSize.height)
+          iconSize.height = nsImg.size.height;
+      }
+    }
 
     if (iconSize.width <= 0 || iconSize.height <= 0)
       return gfx::Image();
 
     const NSRect fullRect = NSMakeRect(0, 0, iconSize.width, iconSize.height);
 
-    // Create tinted versions of the template layer
-    NSImage* lightTemplate =
-        TintTemplate(templateImg, NSColor.blackColor, iconSize);
-    NSImage* darkTemplate =
-        TintTemplate(templateImg, NSColor.whiteColor, iconSize);
+    // Pre-compose for light mode and dark mode
+    // For each layer, if it's a template, tint it; otherwise use as-is
+    NSMutableArray<NSImage*>* lightLayers = [NSMutableArray array];
+    NSMutableArray<NSImage*>* darkLayers = [NSMutableArray array];
 
-    // Pre-compose for both light and dark modes
-    NSImage* lightComposite = Compose(coloredImg, lightTemplate, iconSize);
-    NSImage* darkComposite = Compose(coloredImg, darkTemplate, iconSize);
+    for (const auto& [img, isTemplate] : layers) {
+      NSImage* nsImg = img.AsNSImage();
+      if (!nsImg)
+        continue;
+
+      if (isTemplate) {
+        // Template layer: create separate versions for light/dark
+        NSImage* lightVer = TintTemplate(nsImg, NSColor.blackColor, iconSize);
+        NSImage* darkVer = TintTemplate(nsImg, NSColor.whiteColor, iconSize);
+        [lightLayers addObject:lightVer];
+        [darkLayers addObject:darkVer];
+      } else {
+        // Non-template layer: use same image for both modes
+        [lightLayers addObject:nsImg];
+        [darkLayers addObject:nsImg];
+      }
+    }
+
+    // Compose all layers for light mode
+    NSImage* lightComposite = [[NSImage alloc] initWithSize:iconSize];
+    [lightComposite lockFocus];
+    [[NSGraphicsContext currentContext]
+        setImageInterpolation:NSImageInterpolationNone];
+    for (NSImage* layer in lightLayers) {
+      [layer drawInRect:fullRect
+                fromRect:NSZeroRect
+               operation:NSCompositingOperationSourceOver
+                fraction:1.0
+          respectFlipped:NO
+                   hints:@{
+                     NSImageHintInterpolation : @(NSImageInterpolationNone)
+                   }];
+    }
+    [lightComposite unlockFocus];
+
+    // Compose all layers for dark mode
+    NSImage* darkComposite = [[NSImage alloc] initWithSize:iconSize];
+    [darkComposite lockFocus];
+    [[NSGraphicsContext currentContext]
+        setImageInterpolation:NSImageInterpolationNone];
+    for (NSImage* layer in darkLayers) {
+      [layer drawInRect:fullRect
+                fromRect:NSZeroRect
+               operation:NSCompositingOperationSourceOver
+                fraction:1.0
+          respectFlipped:NO
+                   hints:@{
+                     NSImageHintInterpolation : @(NSImageInterpolationNone)
+                   }];
+    }
+    [darkComposite unlockFocus];
 
     // Create adaptive image with drawing handler
     NSImage* composite = [NSImage

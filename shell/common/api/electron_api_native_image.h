@@ -109,6 +109,11 @@ class NativeImage final : public gin_helper::DeprecatedWrappable<NativeImage> {
 
   const gfx::Image& image() const { return image_; }
 
+  // Mark the image as template image.
+  void SetTemplateImage(bool setAsTemplate);
+  // Determine if the image is a template image.
+  bool IsTemplateImage();
+
  private:
   v8::Local<v8::Value> ToPNG(gin::Arguments* args);
   v8::Local<v8::Value> ToJPEG(v8::Isolate* isolate, int quality);
@@ -127,11 +132,6 @@ class NativeImage final : public gin_helper::DeprecatedWrappable<NativeImage> {
   void AddRepresentation(const gin_helper::Dictionary& options);
 
   void UpdateExternalAllocatedMemoryUsage();
-
-  // Mark the image as template image.
-  void SetTemplateImage(bool setAsTemplate);
-  // Determine if the image is a template image.
-  bool IsTemplateImage();
 
 #if BUILDFLAG(IS_WIN)
   base::FilePath hicon_path_;

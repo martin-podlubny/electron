@@ -41,11 +41,12 @@ class Menu;
 // a new image that adapts the template parts to light/dark mode.
 gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image);
 
-// Compose two separate images into a layered tray icon:
-// - templateLayer: rendered as template (black in light mode, white in dark)
-// - coloredLayer: preserved as-is and composited on top
-gfx::Image ComposeLayeredTrayImage(const gfx::Image& templateLayer,
-                                   const gfx::Image& coloredLayer);
+// Compose multiple layers into a single tray icon.
+// Each layer is a pair of (gfx::Image, bool isTemplate).
+// Template layers adapt to light/dark mode, non-template layers preserve color.
+// Layers are drawn bottom-to-top (index 0 = bottom).
+gfx::Image ComposeMultiLayerTrayImage(
+    const std::vector<std::pair<gfx::Image, bool>>& layers);
 #endif
 
 class Tray final : public gin_helper::DeprecatedWrappable<Tray>,
@@ -112,8 +113,6 @@ class Tray final : public gin_helper::DeprecatedWrappable<Tray>,
   void SetPressedImage(v8::Isolate* isolate,
                        v8::Local<v8::Value> image,
                        gin::Arguments* args);
-  void SetLayeredImage(const gin_helper::Dictionary& options);
-  void SetLayeredPressedImage(const gin_helper::Dictionary& options);
   void SetToolTip(const std::string& tool_tip);
   void SetTitle(const std::string& title,
                 const std::optional<gin_helper::Dictionary>& options,
