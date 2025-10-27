@@ -47,6 +47,12 @@ gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image);
 // Layers are drawn bottom-to-top (index 0 = bottom).
 gfx::Image ComposeMultiLayerTrayImage(
     const std::vector<std::pair<gfx::Image, bool>>& layers);
+
+// Compose a tray icon from separate light and dark appearance images.
+// The returned image will automatically switch between the two based on
+// system appearance.
+gfx::Image ComposeAppearanceImage(const gfx::Image& lightImage,
+                                  const gfx::Image& darkImage);
 #endif
 
 class Tray final : public gin_helper::DeprecatedWrappable<Tray>,

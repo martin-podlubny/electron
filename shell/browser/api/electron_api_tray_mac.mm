@@ -62,6 +62,40 @@ static NSImage* RenderCI(CIImage* im, CGSize fallbackSize) {
   return ns;
 }
 
+// Create an adaptive image that switches between light and dark versions
+// based on the effective appearance of the context in which it is displayed.
+static NSImage* MakeAdaptiveImage(NSImage* lightImage,
+                                  NSImage* darkImage,
+                                  NSSize iconSize) {
+  NSImage* composite = [NSImage
+       imageWithSize:iconSize
+             flipped:NO
+      drawingHandler:^BOOL(NSRect destRect) {
+        NSAppearance* ap =
+            NSAppearance.currentDrawingAppearance ?: NSApp.effectiveAppearance;
+        BOOL isDark = [[[ap name] lowercaseString] containsString:@"dark"];
+
+        NSImage* finalImg = isDark ? darkImage : lightImage;
+        NSSize imgSize = finalImg.size;
+
+        // Center the image if it's smaller than the canvas
+        CGFloat x =
+            destRect.origin.x + (destRect.size.width - imgSize.width) / 2.0;
+        CGFloat y =
+            destRect.origin.y + (destRect.size.height - imgSize.height) / 2.0;
+        NSRect centeredRect = NSMakeRect(x, y, imgSize.width, imgSize.height);
+
+        [finalImg drawInRect:centeredRect
+                    fromRect:NSZeroRect
+                   operation:NSCompositingOperationSourceOver
+                    fraction:1.0];
+        return YES;
+      }];
+
+  [composite setTemplate:NO];
+  return composite;
+}
+
 // Build ~binary mask: 1 where gray<thr, else 0 (linear space)
 static CIImage* ThresholdMask(CIImage* gray, CGFloat thr) {
   const CGFloat gain = 1000.0;
@@ -288,15 +322,36 @@ static NSImage* Compose(NSImage* colored,
                         NSSize pointSize) {
   NSImage* out = [[NSImage alloc] initWithSize:pointSize];
 
-  // Choose the richer set of reps so we don’t downsample.
-  NSArray<NSImageRep*>* reps =
-      colored.representations.count >= tintedTemplate.representations.count
-          ? colored.representations
-          : tintedTemplate.representations;
+  // Determine scale factor for this composition
+  // (assumes all reps have the same scale relationship to pointSize)
+  CGFloat scaleFactor = 1.0;
+  if (pointSize.width > 0) {
+    // Find the largest pixel width to determine scale
+    for (NSImageRep* rep in colored.representations) {
+      if (rep.pixelsWide > 0) {
+        CGFloat repScale = rep.pixelsWide / pointSize.width;
+        if (repScale > scaleFactor) {
+          scaleFactor = repScale;
+        }
+      }
+    }
+    for (NSImageRep* rep in tintedTemplate.representations) {
+      if (rep.pixelsWide > 0) {
+        CGFloat repScale = rep.pixelsWide / pointSize.width;
+        if (repScale > scaleFactor) {
+          scaleFactor = repScale;
+        }
+      }
+    }
+  }
 
-  for (NSImageRep* rep in reps) {
-    NSInteger pw = rep.pixelsWide;
-    NSInteger ph = rep.pixelsHigh;
+  // Create representations at each scale factor
+  NSArray<NSNumber*>* scaleFactors = @[ @1.0, @2.0, @3.0 ];
+  for (NSNumber* scaleNum in scaleFactors) {
+    CGFloat scale = scaleNum.doubleValue;
+    NSInteger pw = (NSInteger)(pointSize.width * scale);
+    NSInteger ph = (NSInteger)(pointSize.height * scale);
+
     if (pw <= 0 || ph <= 0)
       continue;
 
@@ -318,27 +373,30 @@ static NSImage* Compose(NSImage* colored,
         [NSGraphicsContext graphicsContextWithBitmapImageRep:dst];
     [NSGraphicsContext saveGraphicsState];
     [NSGraphicsContext setCurrentContext:ctx];
-    // Use no interpolation for sharp menu bar icons
     ctx.imageInterpolation = NSImageInterpolationNone;
 
-    NSRect r = NSMakeRect(0, 0, pw, ph);
-    [colored drawInRect:r
-               fromRect:NSZeroRect
-              operation:NSCompositingOperationSourceOver
-               fraction:1.0
-         respectFlipped:NO
-                  hints:@{
-                    NSImageHintInterpolation : @(NSImageInterpolationNone)
-                  }];
-    [tintedTemplate
-            drawInRect:r
-              fromRect:NSZeroRect
-             operation:NSCompositingOperationSourceOver
-              fraction:1.0
-        respectFlipped:NO
-                 hints:@{
-                   NSImageHintInterpolation : @(NSImageInterpolationNone)
-                 }];
+    // Helper to draw an image centered within the canvas
+    auto drawCentered = ^(NSImage* img) {
+      NSSize imgSize = img.size;
+      CGFloat imgW = imgSize.width * scale;
+      CGFloat imgH = imgSize.height * scale;
+      CGFloat x = (pw - imgW) / 2.0;
+      CGFloat y = (ph - imgH) / 2.0;
+      NSRect destRect = NSMakeRect(x, y, imgW, imgH);
+
+      [img drawInRect:destRect
+                fromRect:NSZeroRect
+               operation:NSCompositingOperationSourceOver
+                fraction:1.0
+          respectFlipped:NO
+                   hints:@{
+                     NSImageHintInterpolation : @(NSImageInterpolationNone)
+                   }];
+    };
+
+    // Draw both layers centered
+    drawCentered(colored);
+    drawCentered(tintedTemplate);
 
     [NSGraphicsContext restoreGraphicsState];
     [out addRepresentation:dst];
@@ -363,8 +421,6 @@ gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image) {
     if (!coloredPart || !templatePart)
       return image;
 
-    const NSRect fullRect = NSMakeRect(0, 0, iconSize.width, iconSize.height);
-
     NSImage* lightTemplate =
         TintTemplate(templatePart, NSColor.blackColor, iconSize);
     NSImage* darkTemplate =
@@ -374,23 +430,8 @@ gfx::Image ApplyTemplateImageWithColor(const gfx::Image& image) {
     NSImage* lightComposite = Compose(lightTemplate, coloredPart, iconSize);
     NSImage* darkComposite = Compose(darkTemplate, coloredPart, iconSize);
 
-    NSImage* composite = [NSImage
-         imageWithSize:iconSize
-               flipped:NO
-        drawingHandler:^BOOL(NSRect destRect) {
-          NSAppearance* ap = NSAppearance.currentDrawingAppearance
-                                 ?: NSApp.effectiveAppearance;
-          BOOL isDark = [[[ap name] lowercaseString] containsString:@"dark"];
-
-          NSImage* finalImg = isDark ? darkComposite : lightComposite;
-          [finalImg drawInRect:destRect
-                      fromRect:fullRect
-                     operation:NSCompositingOperationSourceOver
-                      fraction:1.0];
-          return YES;
-        }];
-
-    [composite setTemplate:NO];
+    NSImage* composite =
+        MakeAdaptiveImage(lightComposite, darkComposite, iconSize);
     return gfx::Image(composite);
   }
 }
@@ -417,8 +458,6 @@ gfx::Image ComposeMultiLayerTrayImage(
     if (iconSize.width <= 0 || iconSize.height <= 0)
       return gfx::Image();
 
-    const NSRect fullRect = NSMakeRect(0, 0, iconSize.width, iconSize.height);
-
     // Pre-compose for light mode and dark mode
     // For each layer, if it's a template, tint it; otherwise use as-is
     NSMutableArray<NSImage*>* lightLayers = [NSMutableArray array];
@@ -431,8 +470,12 @@ gfx::Image ComposeMultiLayerTrayImage(
 
       if (isTemplate) {
         // Template layer: create separate versions for light/dark
-        NSImage* lightVer = TintTemplate(nsImg, NSColor.blackColor, iconSize);
-        NSImage* darkVer = TintTemplate(nsImg, NSColor.whiteColor, iconSize);
+        // Use the original image size, not the canvas size
+        NSSize originalSize = nsImg.size;
+        NSImage* lightVer =
+            TintTemplate(nsImg, NSColor.blackColor, originalSize);
+        NSImage* darkVer =
+            TintTemplate(nsImg, NSColor.whiteColor, originalSize);
         [lightLayers addObject:lightVer];
         [darkLayers addObject:darkVer];
       } else {
@@ -442,58 +485,67 @@ gfx::Image ComposeMultiLayerTrayImage(
       }
     }
 
-    // Compose all layers for light mode
-    NSImage* lightComposite = [[NSImage alloc] initWithSize:iconSize];
-    [lightComposite lockFocus];
-    [[NSGraphicsContext currentContext]
-        setImageInterpolation:NSImageInterpolationNone];
-    for (NSImage* layer in lightLayers) {
-      [layer drawInRect:fullRect
-                fromRect:NSZeroRect
-               operation:NSCompositingOperationSourceOver
-                fraction:1.0
-          respectFlipped:NO
-                   hints:@{
-                     NSImageHintInterpolation : @(NSImageInterpolationNone)
-                   }];
-    }
-    [lightComposite unlockFocus];
+    // Helper to draw layers centered
+    auto composeLayers = ^NSImage*(NSArray<NSImage*>* layerArray) {
+      NSImage* composite = [[NSImage alloc] initWithSize:iconSize];
+      [composite lockFocus];
+      [[NSGraphicsContext currentContext]
+          setImageInterpolation:NSImageInterpolationNone];
 
-    // Compose all layers for dark mode
-    NSImage* darkComposite = [[NSImage alloc] initWithSize:iconSize];
-    [darkComposite lockFocus];
-    [[NSGraphicsContext currentContext]
-        setImageInterpolation:NSImageInterpolationNone];
-    for (NSImage* layer in darkLayers) {
-      [layer drawInRect:fullRect
-                fromRect:NSZeroRect
-               operation:NSCompositingOperationSourceOver
-                fraction:1.0
-          respectFlipped:NO
-                   hints:@{
-                     NSImageHintInterpolation : @(NSImageInterpolationNone)
-                   }];
-    }
-    [darkComposite unlockFocus];
+      for (NSImage* layer in layerArray) {
+        NSSize layerSize = layer.size;
+        // Center the layer if it's smaller than the canvas
+        CGFloat x = (iconSize.width - layerSize.width) / 2.0;
+        CGFloat y = (iconSize.height - layerSize.height) / 2.0;
+        NSRect destRect = NSMakeRect(x, y, layerSize.width, layerSize.height);
+
+        [layer drawInRect:destRect
+                  fromRect:NSZeroRect
+                 operation:NSCompositingOperationSourceOver
+                  fraction:1.0
+            respectFlipped:NO
+                     hints:@{
+                       NSImageHintInterpolation : @(NSImageInterpolationNone)
+                     }];
+      }
+
+      [composite unlockFocus];
+      return composite;
+    };
+
+    // Compose all layers for both light and dark modes
+    NSImage* lightComposite = composeLayers(lightLayers);
+    NSImage* darkComposite = composeLayers(darkLayers);
 
     // Create adaptive image with drawing handler
-    NSImage* composite = [NSImage
-         imageWithSize:iconSize
-               flipped:NO
-        drawingHandler:^BOOL(NSRect destRect) {
-          NSAppearance* ap = NSAppearance.currentDrawingAppearance
-                                 ?: NSApp.effectiveAppearance;
-          BOOL isDark = [[[ap name] lowercaseString] containsString:@"dark"];
+    NSImage* composite =
+        MakeAdaptiveImage(lightComposite, darkComposite, iconSize);
+    return gfx::Image(composite);
+  }
+}
 
-          NSImage* finalImg = isDark ? darkComposite : lightComposite;
-          [finalImg drawInRect:destRect
-                      fromRect:fullRect
-                     operation:NSCompositingOperationSourceOver
-                      fraction:1.0];
-          return YES;
-        }];
+// Simple appearance-based image composition
+// User provides pre-rendered light and dark versions
+gfx::Image ComposeAppearanceImage(const gfx::Image& lightImage,
+                                  const gfx::Image& darkImage) {
+  @autoreleasepool {
+    NSImage* lightImg = lightImage.AsNSImage();
+    NSImage* darkImg = darkImage.AsNSImage();
 
-    [composite setTemplate:NO];
+    if (!lightImg || !darkImg)
+      return gfx::Image();
+
+    // Use the larger of the two images' point sizes
+    NSSize lightSize = lightImg.size;
+    NSSize darkSize = darkImg.size;
+    NSSize iconSize = NSMakeSize(std::max(lightSize.width, darkSize.width),
+                                 std::max(lightSize.height, darkSize.height));
+
+    if (iconSize.width <= 0 || iconSize.height <= 0)
+      return gfx::Image();
+
+    // Create adaptive image with drawing handler
+    NSImage* composite = MakeAdaptiveImage(lightImg, darkImg, iconSize);
     return gfx::Image(composite);
   }
 }

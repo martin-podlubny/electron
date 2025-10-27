@@ -210,12 +210,31 @@ void Tray::SetImage(v8::Isolate* isolate,
     return;
 
 #if BUILDFLAG(IS_MAC)
-  // Check if first argument is an options object with layers
+  // Check if first argument is an options object
   if (image->IsObject() && !image->IsNull()) {
     gin_helper::Dictionary options(isolate, image.As<v8::Object>());
+
+    // Check for appearance-based images (light/dark)
+    v8::Local<v8::Value> light_value;
+    v8::Local<v8::Value> dark_value;
+    if (options.Get("light", &light_value) &&
+        options.Get("dark", &dark_value)) {
+      NativeImage* light_image = nullptr;
+      NativeImage* dark_image = nullptr;
+
+      if (NativeImage::TryConvertNativeImage(isolate, light_value,
+                                             &light_image) &&
+          NativeImage::TryConvertNativeImage(isolate, dark_value,
+                                             &dark_image)) {
+        tray_icon_->SetImage(
+            ComposeAppearanceImage(light_image->image(), dark_image->image()));
+        return;
+      }
+    }
+
+    // Check for multi-layer mode
     v8::Local<v8::Value> layers_value;
     if (options.Get("layers", &layers_value) && layers_value->IsArray()) {
-      // Multi-layer mode
       v8::Local<v8::Array> layers_array = layers_value.As<v8::Array>();
       std::vector<std::pair<gfx::Image, bool>> layers;
 
@@ -279,12 +298,31 @@ void Tray::SetPressedImage(v8::Isolate* isolate,
     return;
 
 #if BUILDFLAG(IS_MAC)
-  // Check if first argument is an options object with layers
+  // Check if first argument is an options object
   if (image->IsObject() && !image->IsNull()) {
     gin_helper::Dictionary options(isolate, image.As<v8::Object>());
+
+    // Check for appearance-based images (light/dark)
+    v8::Local<v8::Value> light_value;
+    v8::Local<v8::Value> dark_value;
+    if (options.Get("light", &light_value) &&
+        options.Get("dark", &dark_value)) {
+      NativeImage* light_image = nullptr;
+      NativeImage* dark_image = nullptr;
+
+      if (NativeImage::TryConvertNativeImage(isolate, light_value,
+                                             &light_image) &&
+          NativeImage::TryConvertNativeImage(isolate, dark_value,
+                                             &dark_image)) {
+        tray_icon_->SetPressedImage(
+            ComposeAppearanceImage(light_image->image(), dark_image->image()));
+        return;
+      }
+    }
+
+    // Check for multi-layer mode
     v8::Local<v8::Value> layers_value;
     if (options.Get("layers", &layers_value) && layers_value->IsArray()) {
-      // Multi-layer mode
       v8::Local<v8::Array> layers_array = layers_value.As<v8::Array>();
       std::vector<std::pair<gfx::Image, bool>> layers;
 
