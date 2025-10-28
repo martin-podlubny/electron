@@ -188,30 +188,4 @@ gfx::Image ComposeMultiLayerTrayImage(
   }
 }
 
-// Simple appearance-based image composition
-// User provides pre-rendered light and dark versions
-gfx::Image ComposeAppearanceImage(const gfx::Image& lightImage,
-                                  const gfx::Image& darkImage) {
-  @autoreleasepool {
-    NSImage* lightImg = lightImage.AsNSImage();
-    NSImage* darkImg = darkImage.AsNSImage();
-
-    if (!lightImg || !darkImg)
-      return gfx::Image();
-
-    // Use the larger of the two images' point sizes
-    NSSize lightSize = lightImg.size;
-    NSSize darkSize = darkImg.size;
-    NSSize iconSize = NSMakeSize(std::max(lightSize.width, darkSize.width),
-                                 std::max(lightSize.height, darkSize.height));
-
-    if (iconSize.width <= 0 || iconSize.height <= 0)
-      return gfx::Image();
-
-    // Create adaptive image with drawing handler
-    NSImage* composite = MakeAdaptiveImage(lightImg, darkImg, iconSize);
-    return gfx::Image(composite);
-  }
-}
-
 }  // namespace electron::api
